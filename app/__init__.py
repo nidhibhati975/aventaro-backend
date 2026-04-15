@@ -1,0 +1,1 @@
+"""Aventaro FastAPI backend package."""
