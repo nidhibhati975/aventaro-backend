@@ -1,0 +1,109 @@
+name: iOS Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - release/**
+
+jobs:
+  ios-build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE }}
+      SIGNING_CERT: ${{ secrets.SIGNING_CERT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.19.4
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install JS Dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install CocoaPods
+        working-directory: frontend/ios
+        run: |
+          gem install cocoapods --no-document
+          pod install --repo-update
+
+      - name: Install Signing Certificate
+        if: ${{ env.SIGNING_CERT != '' }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/signing-cert.p12"
+          echo "$SIGNING_CERT" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "" -A
+          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN_PATH"
+
+      - name: Install Provisioning Profile
+        if: ${{ env.PROVISIONING_PROFILE != '' }}
+        run: |
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          echo "$PROVISIONING_PROFILE" | base64 --decode > "$PROFILE_DIR/Aventaro.mobileprovision"
+
+      - name: Create Export Options
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+            <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>signingStyle</key>
+              <string>manual</string>
+              <key>teamID</key>
+              <string>${APPLE_TEAM_ID}</string>
+              <key>compileBitcode</key>
+              <false/>
+              <key>provisioningProfiles</key>
+              <dict>
+                <key>com.aventaro.app</key>
+                <string>${PROVISIONING_PROFILE}</string>
+              </dict>
+            </dict>
+          </plist>
+          EOF
+
+      - name: Archive iOS App
+        working-directory: frontend/ios
+        run: |
+          xcodebuild \
+            -workspace AventaroBareTmp.xcworkspace \
+            -scheme AventaroBareTmp \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/Aventaro.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROVISIONING_PROFILE" \
+            CODE_SIGN_STYLE=Manual \
+            archive
+
+      - name: Export IPA
+        working-directory: frontend/ios
+        run: |
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$RUNNER_TEMP/Aventaro.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/ipa"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: aventaro-ios-ipa
+          path: ${{ runner.temp }}/ipa/*.ipa

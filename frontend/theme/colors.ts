@@ -1,0 +1,31 @@
+export const COLORS = {
+  PRIMARY_PURPLE: '#6C3BFF',
+  SECONDARY_PURPLE: '#8E66FF',
+  ACCENT_PURPLE: '#BBA6FF',
+  GOLD: '#E7C66B',
+  GOLD_SOFT: '#FFF4D4',
+  GOLD_DEEP: '#B58B1D',
+  BACKGROUND: '#F7F5FF',
+  SURFACE: '#FFFFFF',
+  SURFACE_ELEVATED: '#F4EEFF',
+  SURFACE_MUTED: '#EEE8FF',
+  BORDER: '#DDD2FF',
+  BORDER_SOFT: '#E8E0FF',
+  TEXT_PRIMARY: '#241A4D',
+  TEXT_SECONDARY: '#6D62A5',
+  TEXT_MUTED: '#9A90C2',
+  ICON_DEFAULT: '#4C3F86',
+  WHITE: '#FFFFFF',
+  OVERLAY: 'rgba(30, 18, 73, 0.5)',
+  SHADOW: 'rgba(71, 39, 167, 0.14)',
+  DANGER: '#C72F5F',
+  DANGER_SOFT: '#FFE8F1',
+  WARNING: '#9D5E00',
+  WARNING_SOFT: '#FFF2D8',
+  SUCCESS: '#6C3BFF',
+  SUCCESS_SOFT: '#EFE9FF',
+};
+
+export function alpha(hexColor: string, alphaHex: string) {
+  return `${hexColor}${alphaHex}`;
+}
