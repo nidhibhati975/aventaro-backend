@@ -100,6 +100,7 @@ def releaseStoreFilePath = getConfigValue('ANDROID_KEYSTORE_PATH', 'MYAPP_UPLOAD
 def releaseStorePassword = getConfigValue('ANDROID_KEYSTORE_PASSWORD', 'MYAPP_UPLOAD_STORE_PASSWORD')
 def releaseKeyAlias = getConfigValue('ANDROID_KEY_ALIAS', 'MYAPP_UPLOAD_KEY_ALIAS')
 def releaseKeyPassword = getConfigValue('ANDROID_KEY_PASSWORD', 'MYAPP_UPLOAD_KEY_PASSWORD')
+def allowDebugSignedRelease = (getConfigValue('ANDROID_ALLOW_DEBUG_SIGNED_RELEASE') ?: 'false').toBoolean()
 def hasValidReleaseSigning =
     releaseStoreFilePath &&
     releaseStorePassword &&
@@ -139,6 +140,7 @@ android {
         }
         // Keep packaged resources English-only for consistent app language.
         resConfigs "en"
+        manifestPlaceholders = [usesCleartextTraffic: "true"]
     }
     signingConfigs {
         debug {
@@ -165,6 +167,7 @@ android {
             debuggable false
             minifyEnabled enableProguardInReleaseBuilds
             shrinkResources enableProguardInReleaseBuilds
+            manifestPlaceholders = [usesCleartextTraffic: "false"]
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
     }
@@ -172,6 +175,19 @@ android {
         resources {
             excludes += ["/META-INF/{AL2.0,LGPL2.1}", "META-INF/LICENSE*", "META-INF/NOTICE*"]
         }
+    }
+}
+
+gradle.taskGraph.whenReady { taskGraph ->
+    def releaseArtifactTaskRequested = taskGraph.allTasks.any { task ->
+        task.path in [":app:assembleRelease", ":app:bundleRelease", ":app:packageRelease"]
+    }
+    if (releaseArtifactTaskRequested && !hasValidReleaseSigning && !allowDebugSignedRelease) {
+        throw new GradleException(
+            "Release signing is required for Android release artifacts. " +
+            "Set ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD " +
+            "to real non-placeholder values. For local smoke builds only, pass -PANDROID_ALLOW_DEBUG_SIGNED_RELEASE=true."
+        )
     }
 }
 
@@ -185,3 +201,5 @@ dependencies {
         implementation jscFlavor
     }
 }
+
+apply plugin: "com.google.gms.google-services"

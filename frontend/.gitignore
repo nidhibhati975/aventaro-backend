@@ -21,6 +21,7 @@ ios/build/
 *.p12
 *.key
 *.mobileprovision
+ios/AventaroBareTmp/GoogleService-Info.plist
 
 # Logs
 npm-debug.*

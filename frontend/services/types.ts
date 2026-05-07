@@ -8,6 +8,10 @@ export interface UserProfile {
   interests?: string[] | null;
   budget_min?: number | null;
   budget_max?: number | null;
+  travel_start_date?: string | null;
+  travel_end_date?: string | null;
+  is_verified?: boolean | null;
+  verification_level?: string | null;
 }
 
 export interface AppUser {
@@ -19,6 +23,8 @@ export interface AppUser {
   followers_count?: number;
   following_count?: number;
   saved_count?: number;
+  is_active?: boolean;
+  is_admin?: boolean;
 }
 
 export interface MatchRecord {
@@ -28,11 +34,87 @@ export interface MatchRecord {
   user: AppUser;
   compatibility_score?: number | null;
   compatibility_reason?: string | null;
+  compatibility_reasons?: string[] | null;
+  compatibility_breakdown?: Record<string, unknown> | null;
+}
+
+export interface MatchSuggestionRecord {
+  user: AppUser;
+  score: number;
+  reasons: string[];
+  breakdown: Record<string, unknown>;
 }
 
 export interface TripMemberRecord {
   user: AppUser;
+  role?: 'owner' | 'member';
   status: 'pending' | 'approved';
+}
+
+export interface TripItineraryItem {
+  id: number;
+  title: string;
+  description?: string | null;
+  item_date?: string | null;
+  order_index: number;
+  created_at: string;
+}
+
+export interface TripPlaceRecord {
+  id: number;
+  trip_id: number;
+  day_id?: number | null;
+  created_by_user_id: number;
+  name: string;
+  address?: string | null;
+  notes?: string | null;
+  external_place_id?: string | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  order_index: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TripVoteRecord {
+  id: number;
+  user_id: number;
+  option_index: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TripPollRecord {
+  id: number;
+  trip_id: number;
+  day_id?: number | null;
+  created_by_user_id: number;
+  question: string;
+  options: string[];
+  closes_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  votes: TripVoteRecord[];
+}
+
+export interface TripItineraryDayRecord {
+  id: number;
+  created_by_user_id: number;
+  day_date: string;
+  title?: string | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+  places?: TripPlaceRecord[];
+  polls?: TripPollRecord[];
+}
+
+export interface TripWorkspaceRecord {
+  days: TripItineraryDayRecord[];
+  places: TripPlaceRecord[];
+  polls: TripPollRecord[];
+  unassigned_places: TripPlaceRecord[];
+  unassigned_polls: TripPollRecord[];
 }
 
 export interface TripRecord {
@@ -49,6 +131,10 @@ export interface TripRecord {
   interests?: string[] | null;
   start_date?: string | null;
   end_date?: string | null;
+  visibility?: 'public' | 'private' | null;
+  status?: 'planned' | 'active' | 'completed' | null;
+  lifecycle_status?: 'draft' | 'planned' | 'active' | 'completed' | 'cancelled' | null;
+  itinerary?: TripItineraryItem[];
   budget?: string | null;
 }
 
@@ -92,13 +178,61 @@ export interface ChatMessageRecord {
 }
 
 export interface BookingRecord {
-  id: string;
-  type: 'hotel' | 'flight';
+  id: number;
+  trip_id?: number | null;
+  status: string;
+  total_amount: number;
+  currency: string;
+  created_at: string;
+}
+
+export interface BookingItemRecord {
+  id: number;
+  item_type: 'hotel' | 'flight' | 'activity' | string;
+  provider_name: string;
+  external_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  quantity: number;
+  price: number;
+}
+
+export interface BookingDetailsRecord extends BookingRecord {
+  items: BookingItemRecord[];
+}
+
+export interface BookingSearchResultRecord {
+  provider_name: string;
+  external_id: string;
+  result_type: 'hotel' | 'flight' | 'activity';
   title: string;
-  subtitle?: string | null;
-  amount?: number | null;
-  currency?: string | null;
-  status?: string | null;
+  description?: string | null;
+  location: string;
+  price: number;
+  currency: string;
+  rating?: number | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface BookingSearchDetailsRecord extends BookingSearchResultRecord {
+  amenities?: string[];
+  images?: string[];
+  policies?: Record<string, unknown> | null;
+}
+
+export interface BookingReservationRecord {
+  provider_name: string;
+  external_id: string;
+  confirmation_number?: string | null;
+  status: string;
+  total_price: number;
+  currency: string;
+  check_in?: string | null;
+  check_out?: string | null;
+}
+
+export interface BookingReservationResponse {
+  reservation: BookingReservationRecord;
+  booking: BookingDetailsRecord;
 }
 
 export interface NotificationRecord {
@@ -109,11 +243,54 @@ export interface NotificationRecord {
   is_read: boolean;
   type?: string;
   entity_id?: string | number | null;
+  entity_type?: string | null;
+  deep_link?: string | null;
+  status?: string | null;
+  priority?: string | null;
 }
 
 export interface PaymentSessionResult {
-  url?: string | null;
-  status: 'success' | 'pending' | 'failed';
+  payment_id: string;
+  booking_id: number;
+  amount: number;
+  currency: string;
+  status: string;
+  checkout_url: string;
+  expires_at?: string | null;
+}
+
+export interface VerificationRequestRecord {
+  id: number;
+  type: 'id' | 'selfie' | 'social';
+  status: 'pending' | 'approved' | 'rejected';
+  document_url?: string | null;
+  created_at: string;
+}
+
+export interface VerificationStatusRecord {
+  is_verified: boolean;
+  verification_level: string;
+  latest_request?: VerificationRequestRecord | null;
+}
+
+export interface ReportRecord {
+  id: number;
+  target_type: 'post' | 'user';
+  target_id: number;
+  reason: string;
+  created_at: string;
+}
+
+export interface BlockedUserRecord {
+  user: AppUser;
+}
+
+export interface ModerationCaseRecord {
+  id: number;
+  report_id: number;
+  status: 'open' | 'reviewing' | 'resolved';
+  admin_action?: string | null;
+  created_at: string;
 }
 
 export interface SubscriptionRecord {

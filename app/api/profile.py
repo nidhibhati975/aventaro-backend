@@ -1,3 +1,5 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -6,6 +8,7 @@ from app.db.session import get_db
 from app.models.profile import Profile
 from app.models.user import User
 from app.services.auth import get_current_user
+from app.services.geo import normalize_coordinate_pair, validate_coordinates
 from app.services.redis_runtime import invalidate_discover_cache, invalidate_match_suggestions_cache
 
 
@@ -24,6 +27,10 @@ class ProfileRead(BaseModel):
     interests: list[str] | None = None
     budget_min: int | None = None
     budget_max: int | None = None
+    travel_start_date: date | None = None
+    travel_end_date: date | None = None
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -36,6 +43,10 @@ class ProfileUpdateRequest(BaseModel):
     interests: list[str] | None = None
     budget_min: int | None = Field(default=None, ge=0)
     budget_max: int | None = Field(default=None, ge=0)
+    travel_start_date: date | None = None
+    travel_end_date: date | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
 
 
 @router.get("/me", response_model=ProfileRead)
@@ -59,8 +70,19 @@ def update_profile(
         profile = Profile(user_id=current_user.id)
         db.add(profile)
 
+    effective_latitude = payload.latitude if payload.latitude is not None else profile.latitude
+    effective_longitude = payload.longitude if payload.longitude is not None else profile.longitude
+    try:
+        normalized_latitude, normalized_longitude = normalize_coordinate_pair(effective_latitude, effective_longitude)
+        validate_coordinates(normalized_latitude, normalized_longitude)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(profile, field, value)
+    if payload.latitude is not None or payload.longitude is not None:
+        profile.latitude = normalized_latitude
+        profile.longitude = normalized_longitude
 
     db.commit()
     db.refresh(profile)

@@ -28,7 +28,7 @@ class Match(Base):
             text("LEAST(sender_id, receiver_id)"),
             text("GREATEST(sender_id, receiver_id)"),
             unique=True,
-        ),
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint("sender_id <> receiver_id", name="ck_app_matches_distinct_users"),
         CheckConstraint(
             "(compatibility_score IS NULL) OR (compatibility_score >= 0 AND compatibility_score <= 100)",

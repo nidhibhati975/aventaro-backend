@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "268526962775",
+    "project_id": "aventaro-77112",
+    "storage_bucket": "aventaro-77112.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:268526962775:android:ad9d65d28b4e724c5bbb12",
+        "android_client_info": {
+          "package_name": "com.aventaro.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCnoYGDknZdFdhr1dj4OqafYM-8IsGv8V4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

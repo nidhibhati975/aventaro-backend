@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
 
-from app.services.health import check_database_health, check_redis_health
+from app.services.health import check_database_health, check_redis_health, get_runtime_health
 
 
 router = APIRouter(tags=["health"])
@@ -16,16 +17,22 @@ def _run_healthcheck(check, message: str) -> None:
 
 
 @router.get("/health")
-def healthcheck() -> dict[str, object]:
-    _run_healthcheck(check_database_health, "Database is not reachable")
-    _run_healthcheck(check_redis_health, "Redis is not reachable")
-    return {
-        "status": "ok",
-        "services": {
-            "db": "ok",
-            "redis": "ok",
-        },
-    }
+def healthcheck() -> JSONResponse:
+    runtime_health = get_runtime_health()
+    status_code = status.HTTP_200_OK if runtime_health["status"] == "ok" else status.HTTP_503_SERVICE_UNAVAILABLE
+    return JSONResponse(status_code=status_code, content=runtime_health)
+
+
+@router.get("/health/live")
+def liveness_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/health/ready")
+def readiness_check() -> JSONResponse:
+    runtime_health = get_runtime_health()
+    status_code = status.HTTP_200_OK if runtime_health["status"] == "ok" else status.HTTP_503_SERVICE_UNAVAILABLE
+    return JSONResponse(status_code=status_code, content=runtime_health)
 
 
 @router.get("/health/db")

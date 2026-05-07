@@ -98,7 +98,7 @@ class PostWatch(Base):
 class PostComment(Base):
     __tablename__ = "app_comments"
     __table_args__ = (
-        CheckConstraint("char_length(trim(comment)) > 0", name="ck_app_comments_not_blank"),
+        CheckConstraint("length(trim(comment)) > 0", name="ck_app_comments_not_blank"),
         Index("ix_app_comments_post_created_at", "post_id", "created_at"),
         Index("ix_app_comments_user_created_at", "user_id", "created_at"),
     )
@@ -275,6 +275,7 @@ class Report(Base):
     )
 
     reporter: Mapped["User"] = relationship(back_populates="reports")
+    moderation_case: Mapped["ModerationCase | None"] = relationship(back_populates="report", uselist=False)
 
 
 class Block(Base):
@@ -292,3 +293,34 @@ class Block(Base):
 
     blocker: Mapped["User"] = relationship(back_populates="blocking_relationships", foreign_keys=[blocker_id])
     blocked: Mapped["User"] = relationship(back_populates="blocked_by_relationships", foreign_keys=[blocked_id])
+
+
+class ModerationCaseStatus(str, Enum):
+    open = "open"
+    reviewing = "reviewing"
+    resolved = "resolved"
+
+
+class ModerationCase(Base):
+    __tablename__ = "app_moderation_cases"
+    __table_args__ = (
+        Index("ix_app_moderation_cases_report_id", "report_id"),
+        Index("ix_app_moderation_cases_status", "status"),
+        Index("ix_app_moderation_cases_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    report_id: Mapped[int] = mapped_column(ForeignKey("app_reports.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[ModerationCaseStatus] = mapped_column(
+        SqlEnum(ModerationCaseStatus, native_enum=False),
+        default=ModerationCaseStatus.open,
+        nullable=False,
+    )
+    admin_action: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    report: Mapped["Report"] = relationship(back_populates="moderation_case")

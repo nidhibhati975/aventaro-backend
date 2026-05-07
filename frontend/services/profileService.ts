@@ -6,6 +6,14 @@ export interface EditProfilePayload {
   name?: string;
   age?: number | null;
   bio?: string | null;
+  location?: string | null;
+  gender?: string | null;
+  travel_style?: string | null;
+  interests?: string[] | null;
+  budget_min?: number | null;
+  budget_max?: number | null;
+  travel_start_date?: string | null;
+  travel_end_date?: string | null;
 }
 
 export async function fetchMyProfile(): Promise<AppUser> {
@@ -27,6 +35,8 @@ export async function fetchMyProfile(): Promise<AppUser> {
       followers_count: stats?.followersCount || stats?.followers_count,
       following_count: stats?.followingCount || stats?.following_count,
       saved_count: stats?.savedCount || stats?.saved_count,
+      is_active: stats?.isActive ?? stats?.is_active ?? currentUser?.isActive ?? currentUser?.is_active,
+      is_admin: stats?.isAdmin ?? stats?.is_admin ?? currentUser?.isAdmin ?? currentUser?.is_admin,
     };
   });
 }
@@ -50,6 +60,8 @@ export async function fetchPublicProfile(userId: number, fallback?: AppUser | nu
       followers_count: data?.followersCount || data?.followers_count,
       following_count: data?.followingCount || data?.following_count,
       saved_count: data?.savedCount || data?.saved_count,
+      is_active: data?.isActive ?? data?.is_active,
+      is_admin: data?.isAdmin ?? data?.is_admin,
     };
   } catch (error) {
     if (fallback) {

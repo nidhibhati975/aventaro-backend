@@ -103,6 +103,7 @@ export default function SettingsScreen() {
 
   const safetyRows = useMemo<SettingsRow[]>(
     () => [
+      { key: 'verification', label: 'Verification & Reports', icon: 'shield-checkmark-outline', onPress: () => navigateToPath(APP_PATHS.SCREEN_PRIVACY_SECURITY) },
       { key: 'emergency', label: 'Emergency Contacts', icon: 'warning-outline', onPress: () => navigateToPath(APP_PATHS.SCREEN_EMERGENCY_SOS) },
       { key: 'sharing', label: 'Location Sharing', icon: 'map-outline', onPress: () => navigateToPath(APP_PATHS.SCREEN_LOCATION_SHARING) },
     ],
@@ -162,7 +163,7 @@ export default function SettingsScreen() {
             </View>
             <View style={styles.premiumText}>
               <Text style={styles.premiumTitle}>Aventaro Premium</Text>
-              <Text style={styles.premiumSubtitle}>Unlimited trips · No booking fees · Priority support</Text>
+              <Text style={styles.premiumSubtitle}>Unlimited trips | No booking fees | Priority support</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={COLORS.WHITE} />
           </LinearGradient>
@@ -201,7 +202,7 @@ export default function SettingsScreen() {
           <Text style={styles.signOutText}>Sign Out</Text>
         </TouchableOpacity>
 
-        <Text style={styles.footerText}>Aventaro v1.0.0 · Made with love for wanderers</Text>
+        <Text style={styles.footerText}>Aventaro v1.0.0 | Made for wanderers</Text>
       </ScrollView>
     </SafeAreaView>
   );
@@ -324,3 +325,4 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 });
+

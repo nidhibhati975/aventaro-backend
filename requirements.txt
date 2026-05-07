@@ -2,6 +2,7 @@ fastapi
 uvicorn
 sqlalchemy
 psycopg2-binary
+psycopg[binary]
 alembic
 pydantic
 python-dotenv
@@ -9,5 +10,15 @@ passlib[bcrypt]
 bcrypt==4.0.1
 python-jose
 redis
+rq
 stripe
+razorpay
 httpx
+boto3
+botocore
+sentry-sdk
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-otlp
+pytest

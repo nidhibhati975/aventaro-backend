@@ -1,0 +1,52 @@
+groups:
+  - name: aventaro-api
+    rules:
+      - alert: ApiReadinessDown
+        expr: up{job="aventaro-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Aventaro API readiness is down
+      - alert: HighApiErrorRate
+        expr: rate(http_server_errors_total{service="aventaro-api"}[5m]) > 0.02
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: API 5xx error rate is elevated
+      - alert: PaymentRefundFailure
+        expr: increase(log_events_total{event_type=~"payment_refund_failed_after_provider_refund|booking_provider_refund_after_payment_refund_failed"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Payment/provider refund synchronization failed
+      - alert: BookingCheckoutWithoutPaidStatus
+        expr: increase(log_events_total{event_type="booking_checkout_completed_without_verified_payment"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Booking checkout completed without verified paid status
+      - alert: AiDeadLetterBacklog
+        expr: aventaro_ai_jobs{status="dead_letter"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: AI jobs are dead-lettered
+      - alert: MediaCleanupFailures
+        expr: increase(log_events_total{event_type=~"media_s3_delete_failed|media_cloudfront_invalidation_failed"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Media cleanup or CDN invalidation is failing
+      - alert: PostgisUnavailable
+        expr: aventaro_health_service{service="geo",status="error"} > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostGIS health validation is failing

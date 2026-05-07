@@ -7,7 +7,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.services.auth import decode_access_token, extract_bearer_token
+from app.db.session import SessionLocal
+from app.services.auth import assert_access_session_valid, decode_access_token, extract_bearer_token
 
 
 PROTECTED_PREFIXES = (
@@ -29,6 +30,13 @@ PROTECTED_PREFIXES = (
     "/chat",
     "/notifications",
     "/payments",
+    "/payment",
+    "/booking",
+    "/verification",
+    "/admin",
+    "/affiliate",
+    "/analytics",
+    "/monetization",
     "/support",
 )
 
@@ -39,6 +47,8 @@ PUBLIC_PREFIXES = (
     "/openapi.json",
     "/health",
     "/payments/webhook",
+    "/payments/razorpay/webhook",
+    "/booking/webhook",
 )
 
 PUBLIC_PATHS = {
@@ -64,6 +74,8 @@ class AuthContextMiddleware(BaseHTTPMiddleware):
 
         try:
             payload = decode_access_token(token)
+            with SessionLocal() as db:
+                assert_access_session_valid(db, payload)
         except HTTPException:
             return self._error_response(request, status.HTTP_401_UNAUTHORIZED, "Invalid authentication token")
 

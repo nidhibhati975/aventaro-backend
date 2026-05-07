@@ -1,0 +1,69 @@
+name: Deploy Backend
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment target"
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      image_tag:
+        description: "Image tag to deploy"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push API image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}/aventaro-api:${{ inputs.image_tag }}
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+      - name: Build and push admin image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}/aventaro-admin:${{ inputs.image_tag }}
+          docker build \
+            --build-arg VITE_API_BASE_URL=${{ vars.ADMIN_API_BASE_URL }} \
+            -t "$IMAGE" ./admin
+          docker push "$IMAGE"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+      - name: Run migrations
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "docker run --rm --env-file ${{ vars.ENV_FILE }} ghcr.io/${{ github.repository }}/aventaro-api:${{ inputs.image_tag }} sh scripts/deploy_migrate.sh"
+      - name: Deploy services
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cd ${{ vars.DEPLOY_PATH }} && API_IMAGE=ghcr.io/${{ github.repository }}/aventaro-api ADMIN_IMAGE=ghcr.io/${{ github.repository }}/aventaro-admin IMAGE_TAG=${{ inputs.image_tag }} docker compose pull && API_IMAGE=ghcr.io/${{ github.repository }}/aventaro-api ADMIN_IMAGE=ghcr.io/${{ github.repository }}/aventaro-admin IMAGE_TAG=${{ inputs.image_tag }} docker compose up -d api worker admin"
+      - name: Validate health gates
+        run: python scripts/validate_deployment.py --base-url "${{ vars.API_BASE_URL }}"
+      - name: Roll back on failed validation
+        if: failure()
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} \
+            "cd ${{ vars.DEPLOY_PATH }} && docker compose up -d api worker admin"
+          exit 1

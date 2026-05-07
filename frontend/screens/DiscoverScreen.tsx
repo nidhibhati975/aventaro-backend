@@ -197,7 +197,7 @@ export default function DiscoverScreen() {
         <View style={styles.titleBlock}>
           <Text style={styles.heroTitle}>Discover Your</Text>
           <Text style={styles.heroTitleAccent}>Next Adventure</Text>
-          <Text style={styles.heroSubtitle}>Swipe to find your dream trip</Text>
+          <Text style={styles.heroSubtitle}>Browse live trips, destinations, and travel inspiration</Text>
         </View>
 
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
@@ -261,7 +261,7 @@ export default function DiscoverScreen() {
 
         <View style={styles.swipeRow}>
           <Ionicons name="arrow-back-outline" size={14} color={COLORS.TEXT_MUTED} />
-          <Text style={styles.swipeText}>Swipe to explore</Text>
+          <Text style={styles.swipeText}>Open a trip to view the live workspace</Text>
           <Ionicons name="arrow-forward-outline" size={14} color={COLORS.TEXT_MUTED} />
         </View>
 

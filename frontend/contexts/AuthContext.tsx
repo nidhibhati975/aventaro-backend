@@ -12,6 +12,7 @@ import {
 import {
   fetchCurrentUser,
   loginRequest,
+  logoutRequest,
   normalizeUser,
   signupRequest,
   type AuthSession,
@@ -19,6 +20,7 @@ import {
 } from '../services/authService';
 import { clearCachedValues } from '../services/cache';
 import { errorLogger } from '../services/errorLogger';
+import firebasePushService from '../services/firebasePushService';
 import type { AppUser } from '../services/types';
 
 type User = AppUser;
@@ -279,6 +281,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const signOut = useCallback(async () => {
+    try {
+      await logoutRequest();
+    } catch (error) {
+      errorLogger.logError(error, { source: 'Auth', context: { action: 'logoutRequest' } });
+    }
+
+    try {
+      await firebasePushService.unregister();
+    } catch (error) {
+      errorLogger.logError(error, { source: 'Auth', context: { action: 'unregisterPush' } });
+    }
+
     await clearLocalAuthState();
   }, [clearLocalAuthState]);
 

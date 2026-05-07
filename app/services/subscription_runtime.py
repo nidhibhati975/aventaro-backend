@@ -46,12 +46,15 @@ class SubscriptionExpiryWorker:
 
     async def _run(self) -> None:
         interval_seconds = get_settings().subscription_expiry_job_interval_seconds
-        try:
-            while True:
+        while True:
+            try:
                 await asyncio.to_thread(run_subscription_expiry_sweep)
                 await asyncio.sleep(interval_seconds)
-        except asyncio.CancelledError:
-            return
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("subscription_expiry_worker_iteration_failed")
+                await asyncio.sleep(min(interval_seconds, 30))
 
 
 subscription_expiry_worker = SubscriptionExpiryWorker()

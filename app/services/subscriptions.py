@@ -20,6 +20,7 @@ from app.services.analytics import (
     utc_day_start,
 )
 from app.services.auth import get_current_user
+from app.services.external_retry import call_with_retries
 from app.services.redis_runtime import invalidate_discover_cache
 from app.utils.config import get_settings
 
@@ -31,10 +32,17 @@ STATUS_CANCELED = "canceled"
 STATUS_EXPIRED = "expired"
 BOOST_PROFILE = "profile"
 BOOST_TRIP = "trip"
+STRIPE_API_VERSION = "2026-02-25.clover"
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _ensure_aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def build_premium_required_detail() -> dict[str, object]:
@@ -65,7 +73,7 @@ def _sync_expired_subscription(subscription: Subscription, *, now: datetime | No
     current = now or utcnow()
     if subscription.plan_type != PREMIUM_PLAN or subscription.status != STATUS_ACTIVE:
         return False
-    if subscription.current_period_end is None or subscription.current_period_end > current:
+    if subscription.current_period_end is None or _ensure_aware_utc(subscription.current_period_end) > current:
         return False
     subscription.plan_type = FREE_PLAN
     subscription.status = STATUS_EXPIRED
@@ -117,7 +125,7 @@ def is_premium_record(subscription: Subscription | None, now: datetime | None = 
     current = now or utcnow()
     if subscription.plan_type != PREMIUM_PLAN or subscription.status != STATUS_ACTIVE:
         return False
-    if subscription.current_period_end is not None and subscription.current_period_end <= current:
+    if subscription.current_period_end is not None and _ensure_aware_utc(subscription.current_period_end) <= current:
         return False
     return True
 
@@ -204,6 +212,8 @@ def _configure_stripe() -> None:
     if not settings.stripe_secret_key:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Stripe is not configured")
     stripe.api_key = settings.stripe_secret_key
+    stripe.api_version = STRIPE_API_VERSION
+    stripe.max_network_retries = 2
 
 
 def cancel_current_subscription(db: Session, *, user: User) -> Subscription:
@@ -214,7 +224,7 @@ def cancel_current_subscription(db: Session, *, user: User) -> Subscription:
     if subscription.stripe_subscription_id:
         _configure_stripe()
         try:
-            stripe.Subscription.delete(subscription.stripe_subscription_id)
+            call_with_retries(lambda: stripe.Subscription.delete(subscription.stripe_subscription_id))
         except stripe.error.InvalidRequestError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stripe subscription not found") from exc
         except stripe.error.StripeError as exc:

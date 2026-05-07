@@ -1,9 +1,9 @@
 import * as Sentry from '@sentry/react-native';
 import { SENTRY_DSN } from '@env';
 
-const hasValidDsn = Boolean(
-  SENTRY_DSN && SENTRY_DSN.trim() && SENTRY_DSN.trim() !== 'REPLACE_ME'
-);
+const PLACEHOLDER_VALUES = new Set(['REPLACE', 'REPLACE_ME', 'CHANGE_ME', 'PLACEHOLDER']);
+const normalizedDsn = SENTRY_DSN?.trim();
+const hasValidDsn = Boolean(normalizedDsn && !PLACEHOLDER_VALUES.has(normalizedDsn.toUpperCase()));
 const shouldEnableSentry = !__DEV__ && hasValidDsn;
 
 let initialized = false;
@@ -14,7 +14,7 @@ export function initializeCrashMonitoring() {
   }
 
   Sentry.init({
-    dsn: SENTRY_DSN,
+    dsn: normalizedDsn,
     enabled: shouldEnableSentry,
     debug: false,
     environment: 'production',

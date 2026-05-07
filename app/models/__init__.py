@@ -1,9 +1,25 @@
+from app.models.ai import AIJob, AIUsageLog
+from app.models.analytics import ClientAnalyticsEvent
 from app.models.chat import Conversation, ConversationMember, ConversationType, Message, MessageStatus
 from app.models.growth import AnalyticsEvent, Boost, Referral
+from app.models.ledger import LedgerAccount, LedgerEntry, ReconciliationRun
 from app.models.match import Match, MatchStatus
+from app.models.media import MediaAsset
+from app.models.monetization import (
+    BoostPurchase,
+    CommissionRecord,
+    RevenueMetrics,
+    RewardAction,
+    RewardTransaction,
+    RewardType,
+    TransactionType,
+    UserRewardBalance,
+)
 from app.models.notifications import Notification, PushDevice
 from app.models.payments import Payment, Subscription, WebhookEvent
 from app.models.profile import Profile
+from app.models.realtime import ChatOutboxEvent, MessageDelivery
+from app.models.security import AuthSession, MfaChallenge, SecurityAuditLog
 from app.models.social import (
     Block,
     Collection,
@@ -11,6 +27,8 @@ from app.models.social import (
     Follow,
     Hashtag,
     MediaType,
+    ModerationCase,
+    ModerationCaseStatus,
     Post,
     PostComment,
     PostHashtag,
@@ -22,15 +40,41 @@ from app.models.social import (
     Story,
     StoryView,
 )
-from app.models.trip import Expense, ExpenseSplit, ExpenseSplitStatus, ExpenseSplitType, Trip, TripActivity, TripMember, TripMemberRole, TripMembershipStatus
+from app.models.trip import (
+    Expense,
+    ExpenseSplit,
+    ExpenseSplitStatus,
+    ExpenseSplitType,
+    Trip,
+    TripActivity,
+    TripItineraryDay,
+    TripItineraryItem,
+    TripLifecycleStatus,
+    TripMember,
+    TripMemberRole,
+    TripMembershipStatus,
+    TripPlace,
+    TripPoll,
+    TripVote,
+)
 from app.models.user import User
+from app.models.booking import Booking, BookingItem, BookingItemType, BookingStatus, OrderAction, OrderHistory, ProviderReservation, ReservationStatus
+from app.models.verification import VerificationLevel, VerificationRequest, VerificationStatus, VerificationType
 
 __all__ = [
     "Conversation",
     "ConversationMember",
     "ConversationType",
+    "AIJob",
+    "AIUsageLog",
     "AnalyticsEvent",
+    "AuthSession",
     "Boost",
+    "BoostPurchase",
+    "Booking",
+    "BookingItem",
+    "BookingItemType",
+    "BookingStatus",
     "Expense",
     "ExpenseSplit",
     "ExpenseSplitStatus",
@@ -39,11 +83,30 @@ __all__ = [
     "MessageStatus",
     "Match",
     "MatchStatus",
+    "MediaAsset",
+    "MessageDelivery",
+    "MfaChallenge",
+    "ModerationCase",
+    "ModerationCaseStatus",
     "Notification",
+    "OrderAction",
+    "OrderHistory",
     "PushDevice",
     "Payment",
     "Profile",
+    "ProviderReservation",
+    "ChatOutboxEvent",
+    "ClientAnalyticsEvent",
+    "CommissionRecord",
+    "LedgerAccount",
+    "LedgerEntry",
     "Referral",
+    "ReconciliationRun",
+    "RevenueMetrics",
+    "ReservationStatus",
+    "RewardAction",
+    "RewardTransaction",
+    "RewardType",
     "Block",
     "Collection",
     "CollectionPost",
@@ -61,11 +124,24 @@ __all__ = [
     "Story",
     "StoryView",
     "Subscription",
+    "SecurityAuditLog",
+    "VerificationLevel",
+    "VerificationRequest",
+    "VerificationStatus",
+    "VerificationType",
     "WebhookEvent",
     "Trip",
     "TripActivity",
+    "TripItineraryDay",
+    "TripItineraryItem",
+    "TripLifecycleStatus",
     "TripMember",
     "TripMemberRole",
     "TripMembershipStatus",
+    "TripPlace",
+    "TripPoll",
+    "TripVote",
+    "TransactionType",
     "User",
+    "UserRewardBalance",
 ]

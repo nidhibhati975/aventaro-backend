@@ -66,11 +66,7 @@ function resolveApiUrl(): string {
   const rawBaseUrl = (API_BASE_URL || BACKEND_URL || '').trim();
 
   if (!rawBaseUrl) {
-    if (__DEV__) {
-      return 'http://127.0.0.1:8000';
-    }
-
-    throw new Error('API_BASE_URL (or BACKEND_URL) is required in production.');
+    throw new Error('API_BASE_URL (or BACKEND_URL) is required in .env.');
   }
 
   const normalizedBaseUrl = rawBaseUrl.replace(/\/+$/, '');

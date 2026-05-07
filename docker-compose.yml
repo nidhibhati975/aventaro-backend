@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: aventaro
+      POSTGRES_USER: aventaro
+      POSTGRES_PASSWORD: aventaro
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aventaro -d aventaro"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: ${API_IMAGE:-aventaro-api}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: staging
+      ALLOW_PLACEHOLDER_CONFIG: "true"
+      DATABASE_URL: postgresql://aventaro:aventaro@postgres:5432/aventaro
+      REDIS_URL: redis://redis:6379/0
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  api:
+    image: ${API_IMAGE:-aventaro-api}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: staging
+      ALLOW_PLACEHOLDER_CONFIG: "true"
+      RUN_EMBEDDED_WORKERS: "false"
+      DATABASE_URL: postgresql://aventaro:aventaro@postgres:5432/aventaro
+      REDIS_URL: redis://redis:6379/0
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    image: ${API_IMAGE:-aventaro-api}:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      APP_ENV: staging
+      ALLOW_PLACEHOLDER_CONFIG: "true"
+      DATABASE_URL: postgresql://aventaro:aventaro@postgres:5432/aventaro
+      REDIS_URL: redis://redis:6379/0
+    command: ["python", "-m", "app.worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  admin:
+    image: ${ADMIN_IMAGE:-aventaro-admin}:${IMAGE_TAG:-local}
+    build:
+      context: ./admin
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    ports:
+      - "5174:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

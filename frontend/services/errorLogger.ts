@@ -47,6 +47,10 @@ class ErrorLogger {
     });
   }
 
+  logAPIError(error: unknown, endpoint: string, context?: ErrorContext): void {
+    this.logApiError(error, endpoint, context);
+  }
+
   logWebSocketError(error: unknown, action: string, context?: ErrorContext): void {
     this.logError(error, {
       ...context,

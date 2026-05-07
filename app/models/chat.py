@@ -10,6 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 if TYPE_CHECKING:
+    from app.models.media import MediaAsset
+    from app.models.realtime import MessageDelivery
     from app.models.trip import Trip
     from app.models.user import User
 
@@ -107,6 +109,9 @@ class Message(Base):
     sender_id: Mapped[int] = mapped_column(ForeignKey("app_users.id", ondelete="CASCADE"), nullable=False, index=True)
     recipient_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="CASCADE"), nullable=True, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    client_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     message_status: Mapped[MessageStatus] = mapped_column(
         SqlEnum(MessageStatus, native_enum=False),
         default=MessageStatus.sent,
@@ -122,3 +127,5 @@ class Message(Base):
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
     sender: Mapped["User"] = relationship(foreign_keys=[sender_id], back_populates="sent_messages")
     recipient: Mapped["User | None"] = relationship(foreign_keys=[recipient_id], back_populates="received_messages")
+    media_assets: Mapped[list["MediaAsset"]] = relationship(back_populates="message")
+    deliveries: Mapped[list["MessageDelivery"]] = relationship(back_populates="message", cascade="all, delete-orphan")

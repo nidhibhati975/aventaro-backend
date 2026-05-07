@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from uuid import uuid4
 from typing import Literal
 
 from sqlalchemy import and_, func, or_, select
@@ -10,10 +11,12 @@ from sqlalchemy.orm import Session, selectinload
 from pydantic import BaseModel, Field, ValidationError
 
 from app.models.chat import Conversation, ConversationMember, ConversationType, Message, MessageStatus
+from app.models.media import MediaAsset
+from app.models.realtime import ChatOutboxEvent, MessageDelivery
 from app.models.user import User
 from app.services.ai.openai_client import generate_response_sync
 from app.services.ai.trip_planner import TripPlanRequest, TripPlanResponse, TravelerProfileContext, plan_trip
-from app.services.notifications import create_notification
+from app.services.notifications import NOTIFICATION_ENTITY_TYPE_MESSAGE, create_notification
 from app.services.redis_runtime import build_cache_key, get_cache
 from app.utils.config import get_settings
 
@@ -59,6 +62,7 @@ def list_messages(db: Session, conversation_id: str) -> list[Message]:
         .options(
             selectinload(Message.sender).selectinload(User.profile),
             selectinload(Message.recipient).selectinload(User.profile),
+            selectinload(Message.media_assets),
         )
         .where(Message.conversation_id == conversation_id)
         .order_by(Message.created_at.asc(), Message.id.asc())
@@ -96,13 +100,22 @@ def list_user_messages_since(db: Session, user_id: int, after_message_id: int, l
     return db.scalars(
         select(Message)
         .join(Conversation, Message.conversation_id == Conversation.id)
+        .outerjoin(
+            ConversationMember,
+            and_(ConversationMember.conversation_id == Conversation.id, ConversationMember.user_id == user_id),
+        )
         .options(
             selectinload(Message.sender).selectinload(User.profile),
             selectinload(Message.recipient).selectinload(User.profile),
+            selectinload(Message.media_assets),
         )
         .where(
             Message.id > after_message_id,
-            or_(Conversation.participant_one_id == user_id, Conversation.participant_two_id == user_id),
+            or_(
+                Conversation.participant_one_id == user_id,
+                Conversation.participant_two_id == user_id,
+                ConversationMember.user_id == user_id,
+            ),
         )
         .order_by(Message.id.asc())
         .limit(limit)
@@ -150,30 +163,76 @@ def mark_messages_delivered_for_user(
     user_id: int,
     conversation_id: str | None = None,
 ) -> int:
-    if conversation_id is None:
-        delivery_filter = Message.recipient_id == user_id
-    else:
-        delivery_filter = and_(
-            Conversation.id == conversation_id,
-            Conversation.conversation_type == ConversationType.group,
-        )
-
-    sent_messages = db.scalars(
-        select(Message)
-        .join(Conversation, Conversation.id == Message.conversation_id)
+    query = (
+        select(MessageDelivery)
+        .join(Message, Message.id == MessageDelivery.message_id)
+        .options(selectinload(MessageDelivery.message))
         .where(
-            Message.message_status == MessageStatus.sent,
-            Message.read_at.is_(None),
-            Message.sender_id != user_id,
-            delivery_filter,
+            MessageDelivery.user_id == user_id,
+            MessageDelivery.status.in_(("pending", "streamed")),
         )
-    ).all()
-    if not sent_messages:
+    )
+    if conversation_id is not None:
+        query = query.where(Message.conversation_id == conversation_id)
+
+    deliveries = db.scalars(query).all()
+    if not deliveries:
         return 0
-    for message in sent_messages:
-        message.message_status = MessageStatus.delivered
+    delivered_at = datetime.now(timezone.utc)
+    for delivery in deliveries:
+        delivery.status = "delivered"
+        delivery.delivered_at = delivery.delivered_at or delivered_at
+        message = delivery.message
+        if message.recipient_id == user_id and message.message_status == MessageStatus.sent:
+            message.message_status = MessageStatus.delivered
     db.commit()
-    return len(sent_messages)
+    return len(deliveries)
+
+
+def acknowledge_message_delivery(
+    db: Session,
+    *,
+    user_id: int,
+    message_id: int,
+    status: str = "delivered",
+) -> dict[str, object] | None:
+    message = db.scalar(
+        select(Message)
+        .options(selectinload(Message.deliveries))
+        .where(Message.id == message_id)
+    )
+    if message is None or message.sender_id == user_id:
+        return None
+    now = datetime.now(timezone.utc)
+    delivery = next((item for item in message.deliveries if item.user_id == user_id), None)
+    if delivery is None:
+        delivery = MessageDelivery(message_id=message.id, user_id=user_id, status="pending")
+        db.add(delivery)
+        db.flush()
+    normalized_status = status.strip().lower()
+    is_direct_recipient = message.recipient_id == user_id
+    if normalized_status in {"read", "acknowledged"}:
+        delivery.status = "acknowledged"
+        delivery.delivered_at = delivery.delivered_at or now
+        delivery.acknowledged_at = now
+        if is_direct_recipient:
+            message.read_at = message.read_at or now
+            message.message_status = MessageStatus.read
+    else:
+        if delivery.status in {"pending", "streamed"}:
+            delivery.status = "delivered"
+        delivery.delivered_at = delivery.delivered_at or now
+        if is_direct_recipient and message.message_status == MessageStatus.sent:
+            message.message_status = MessageStatus.delivered
+    db.commit()
+    return {
+        "message_id": message.id,
+        "conversation_id": message.conversation_id,
+        "user_id": user_id,
+        "status": delivery.status,
+        "delivered_at": delivery.delivered_at,
+        "acknowledged_at": delivery.acknowledged_at,
+    }
 
 
 def get_or_create_direct_conversation(db: Session, current_user: User, recipient: User) -> Conversation:
@@ -198,25 +257,134 @@ def get_or_create_direct_conversation(db: Session, current_user: User, recipient
     return conversation
 
 
-def create_message(db: Session, conversation: Conversation, sender: User, recipient: User, content: str) -> Message:
+def create_message(
+    db: Session,
+    conversation: Conversation,
+    sender: User,
+    recipient: User,
+    content: str,
+    *,
+    media_upload_ids: list[str] | None = None,
+    client_message_id: str | None = None,
+) -> Message:
+    if client_message_id:
+        existing = db.scalar(
+            select(Message)
+            .options(
+                selectinload(Message.sender).selectinload(User.profile),
+                selectinload(Message.recipient).selectinload(User.profile),
+                selectinload(Message.media_assets),
+            )
+            .where(Message.sender_id == sender.id, Message.client_message_id == client_message_id)
+        )
+        if existing is not None:
+            return existing
+
+    upload_ids = list(dict.fromkeys(media_upload_ids or []))
+    media_assets: list[MediaAsset] = []
+    if upload_ids:
+        media_assets = db.scalars(
+            select(MediaAsset).where(
+                MediaAsset.upload_id.in_(upload_ids),
+                MediaAsset.user_id == sender.id,
+                MediaAsset.status == "uploaded",
+                MediaAsset.message_id.is_(None),
+            )
+        ).all()
+        if len(media_assets) != len(upload_ids):
+            raise ValueError("One or more media uploads are unavailable or not completed")
+
     message = Message(
         conversation_id=conversation.id,
         sender_id=sender.id,
         recipient_id=recipient.id,
         content=content.strip(),
+        client_message_id=client_message_id,
         message_status=MessageStatus.sent,
     )
     db.add(message)
+    db.flush()
+    for asset in media_assets:
+        asset.message_id = message.id
+        asset.status = "attached"
+    db.add(MessageDelivery(message_id=message.id, user_id=recipient.id, status="pending"))
+    websocket_payload = {
+        "type": "chat.message.created",
+        "data": {
+            "id": message.id,
+            "conversation_id": conversation.id,
+            "content": message.content,
+            "client_message_id": client_message_id,
+            "message_status": MessageStatus.sent.value,
+            "read_at": None,
+            "created_at": message.created_at.isoformat(),
+            "sender": {
+                "id": sender.id,
+                "email": sender.email,
+                "profile": {
+                    "name": sender.profile.name if sender.profile else None,
+                    "location": sender.profile.location if sender.profile else None,
+                },
+            },
+            "recipient": {
+                "id": recipient.id,
+                "email": recipient.email,
+                "profile": {
+                    "name": recipient.profile.name if recipient.profile else None,
+                    "location": recipient.profile.location if recipient.profile else None,
+                },
+            },
+            "media": [
+                {
+                    "id": asset.upload_id,
+                    "upload_id": asset.upload_id,
+                    "type": asset.media_type,
+                    "url": asset.cloudinary_url or asset.cdn_url,
+                    "cdn_url": asset.cdn_url,
+                    "cloudinary_url": asset.cloudinary_url,
+                    "thumbnail_url": asset.cloudinary_url if asset.media_type == "image" else None,
+                    "width": asset.width,
+                    "height": asset.height,
+                    "duration": asset.duration_seconds,
+                    "mime_type": asset.mime_type,
+                    "size": asset.file_size_bytes,
+                    "status": "attached",
+                }
+                for asset in media_assets
+            ],
+        },
+    }
+    db.add(
+        ChatOutboxEvent(
+            event_id=uuid4().hex,
+            event_type="chat.message.created",
+            conversation_id=conversation.id,
+            message_id=message.id,
+            payload={"target": "users", "user_ids": [sender.id, recipient.id], "payload": websocket_payload},
+            status="pending",
+        )
+    )
     create_notification(
         db=db,
         user_id=recipient.id,
         notification_type="chat_message",
         message=f"New message from {sender.profile.name or sender.email}",
+        entity_id=message.id,
+        entity_type=NOTIFICATION_ENTITY_TYPE_MESSAGE,
+        deep_link=f"aventaro://chat/conversation?conversationId={conversation.id}",
         commit=False,
     )
     conversation.last_message_at = datetime.now(timezone.utc)
     db.commit()
-    db.refresh(message)
+    message = db.scalar(
+        select(Message)
+        .options(
+            selectinload(Message.sender).selectinload(User.profile),
+            selectinload(Message.recipient).selectinload(User.profile),
+            selectinload(Message.media_assets),
+        )
+        .where(Message.id == message.id)
+    )
     return message
 
 

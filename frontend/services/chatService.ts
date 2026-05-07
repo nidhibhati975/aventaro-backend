@@ -12,7 +12,8 @@ export async function fetchMessages(conversationId: string): Promise<ChatMessage
   try {
     return getCachedOrFetch(`chat:messages:${conversationId}`, CHAT_CACHE_TTL_MS, async () => {
       const response = await api.get(`/chat/${conversationId}`);
-      return getApiData<ChatMessageRecord[]>(response) || [];
+      const payload = getApiData<any>(response);
+      return Array.isArray(payload) ? payload : payload?.messages || [];
     });
   } catch (error) {
     throw new Error(extractErrorMessage(error, 'Unable to load messages'));

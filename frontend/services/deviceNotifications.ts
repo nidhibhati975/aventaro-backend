@@ -1,37 +1,23 @@
-import { PermissionsAndroid, Platform } from 'react-native';
-import { errorLogger } from './errorLogger';
+import firebasePushService from './firebasePushService';
 
-let permissionRequestInFlight: Promise<boolean> | null = null;
+export async function ensureNotificationPermission(): Promise<boolean> {
+  await firebasePushService.init();
 
-export async function ensureNotificationPermission() {
-  if (Platform.OS !== 'android' || Platform.Version < 33) {
+  const currentStatus = await firebasePushService.checkPermissionStatus();
+  if (currentStatus === 'granted' || currentStatus === 'provisional') {
+    await firebasePushService.syncTokenWithBackend();
     return true;
   }
 
-  if (!permissionRequestInFlight) {
-    permissionRequestInFlight = (async () => {
-      try {
-        const alreadyGranted = await PermissionsAndroid.check(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
-        );
+  const nextStatus = await firebasePushService.requestPermission();
+  return nextStatus === 'granted' || nextStatus === 'provisional';
+}
 
-        if (alreadyGranted) {
-          return true;
-        }
+export async function flushPendingNotificationNavigation(): Promise<boolean> {
+  await firebasePushService.init();
+  return firebasePushService.drainPendingNotificationNavigation();
+}
 
-        const result = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS
-        );
-
-        return result === PermissionsAndroid.RESULTS.GRANTED;
-      } catch (error) {
-        errorLogger.logError(error, { source: 'Notifications', context: { action: 'ensurePermission' } });
-        return false;
-      }
-    })().finally(() => {
-      permissionRequestInFlight = null;
-    });
-  }
-
-  return permissionRequestInFlight;
+export async function teardownDeviceNotifications(): Promise<void> {
+  await firebasePushService.end();
 }

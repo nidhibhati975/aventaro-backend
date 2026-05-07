@@ -1,101 +1,63 @@
-# Aventaro Backend Deployment Guide
+# Aventaro Deployment
 
-Production deployment target: `backend-node` only. Do not deploy the legacy Python backend under `backend/`.
+This repository deploys the backend API, managed background worker, existing admin dashboard, PostgreSQL/PostGIS, Redis, and migrations. The consumer web app is intentionally out of scope for this repo.
 
-## 1) Choose Hosting Target
+## Services
 
-Use one of:
-- VPS (Ubuntu on DigitalOcean/AWS EC2/Linode)
-- Render Web Service
-- Railway Service
+- `api`: FastAPI process running `python -m app.main` with `RUN_EMBEDDED_WORKERS=false` in staging/production.
+- `worker`: managed background workers running `python -m app.worker`.
+- `migrate`: one-shot Alembic migration gate.
+- `postgres`: PostgreSQL with PostGIS enabled.
+- `redis`: cache, rate limit, realtime stream, and job coordination.
+- `admin`: existing admin dashboard served as static assets.
 
-## 2) Prepare Environment Variables
+## Environments
 
-Create server-side env file from `backend-node/.env.production` and replace all `REPLACE_ME` values:
-- `DB_URL`
-- `JWT_SECRET`
-- `JWT_REFRESH_SECRET`
-- `RAZORPAY_KEY_ID`
-- `RAZORPAY_KEY_SECRET`
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_CLIENT_SECRET`
-- `PAYPAL_CLIENT_ID`
-- `PAYPAL_CLIENT_SECRET`
-- `UPI_MERCHANT_ID`
-- `PAYMENT_WEBHOOK_SECRET`
-- `CLOUD_STORAGE_BASE_URL`
+Use separate `.env` files and infrastructure resources for staging and production. Production must use real PostgreSQL, Redis, Stripe, Razorpay, Duffel, S3, CloudFront, Cloudinary, Sentry, and OTLP values before launch. Placeholder credentials are tolerated by local validation only.
 
-Set:
-- `NODE_ENV=production`
-- `PORT=8000`
-- `API_BASE_URL=https://api.aventaro.com`
-- `CORS_ORIGINS=https://aventaro.com,https://app.aventaro.com`
-- `TRUST_PROXY=true`
+Required deployment switches:
 
-## 3) Build + Run (VPS)
+- `APP_ENV=staging` or `APP_ENV=production`
+- `RUN_EMBEDDED_WORKERS=false` for API containers
+- `ALLOW_PLACEHOLDER_CONFIG=false` for real production cutover
+- `DATABASE_URL` pointing at PostGIS-enabled PostgreSQL
+- `REDIS_URL` pointing at the environment Redis instance
 
-From `backend-node`:
+## Deployment Order
 
-```bash
-npm ci --omit=dev
-npm run start
-```
+1. Build and push immutable API and admin images.
+2. Run `alembic upgrade head` with the target environment variables.
+3. Start or roll the API containers.
+4. Start or roll the worker containers.
+5. Start or roll the admin dashboard.
+6. Gate release on `/health/live` and `/health/ready`.
 
-For process management:
+## Rollback
+
+Keep the previous API and admin image tags available. If migration or health validation fails, redeploy the previous image tag and keep workers stopped until `/health/ready` is stable. Migrations must remain backward-compatible for at least one deployed version so rollback does not require destructive schema changes.
+
+## Validation
+
+Local compose validation:
 
 ```bash
-pm2 start ecosystem.config.cjs
-pm2 save
+docker compose up --build migrate api worker admin
+python scripts/validate_deployment.py --base-url http://localhost:8000
 ```
 
-## 4) Reverse Proxy (Nginx)
+Remote compose deployments should set `API_IMAGE`, `ADMIN_IMAGE`, and `IMAGE_TAG` so the same compose file can pull immutable GHCR images instead of building locally.
 
-Forward `api.aventaro.com` -> `127.0.0.1:8000` and preserve proxy headers:
-- `Host`
-- `X-Forwarded-For`
-- `X-Forwarded-Proto=https`
-
-## 5) DNS Setup
-
-In DNS provider:
-- Add `A` record: `api.aventaro.com` -> server public IP
-- Wait for propagation and verify:
+Backend validation:
 
 ```bash
-nslookup api.aventaro.com
+python -m compileall app
+python -m pytest tests
+alembic upgrade head
 ```
 
-## 6) HTTPS (Let's Encrypt)
-
-On Nginx host:
+Mobile validation:
 
 ```bash
-sudo certbot --nginx -d api.aventaro.com
-sudo certbot renew --dry-run
+cd frontend
+npx tsc --noEmit
 ```
-
-## 7) Health Validation
-
-Verify production endpoint:
-
-```bash
-curl -i https://api.aventaro.com/health
-```
-
-Expected: HTTP `200` and JSON with `status: "ok"`.
-
-## 8) Webhook Hardening Checklist
-
-- Restrict webhook URLs to HTTPS only.
-- Configure provider webhook secrets and signature verification.
-- Keep webhook endpoints outside auth CSRF checks only where required.
-- Keep `/api/dev` disabled by running only with `NODE_ENV=production`.
-
-## 9) Post-Deploy Smoke Tests
-
-- Auth: signup/signin/refresh/logout
-- Booking + payment create/verify
-- Chat REST + websocket connect at `/ws/chat`
-- Affiliate referral apply + payout request
-- `GET /health`

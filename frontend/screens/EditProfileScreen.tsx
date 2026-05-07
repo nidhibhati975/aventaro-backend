@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,6 +18,16 @@ import { extractErrorMessage } from '../services/api';
 import { fetchMyProfile, updateMyProfile } from '../services/profileService';
 import { COLORS } from '../theme/colors';
 
+function parseOptionalNumber(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
 export default function EditProfileScreen() {
   const navigation = useNavigation<any>();
   const { refreshUser } = useAuth();
@@ -26,6 +36,12 @@ export default function EditProfileScreen() {
   const [name, setName] = useState('');
   const [age, setAge] = useState('');
   const [bio, setBio] = useState('');
+  const [location, setLocation] = useState('');
+  const [gender, setGender] = useState('');
+  const [travelStyle, setTravelStyle] = useState('');
+  const [interestsInput, setInterestsInput] = useState('');
+  const [budgetMin, setBudgetMin] = useState('');
+  const [budgetMax, setBudgetMax] = useState('');
 
   useEffect(() => {
     const load = async () => {
@@ -35,6 +51,16 @@ export default function EditProfileScreen() {
         setName(profile.profile?.name || '');
         setAge(profile.profile?.age ? String(profile.profile.age) : '');
         setBio(profile.profile?.bio || '');
+        setLocation(profile.profile?.location || '');
+        setGender(profile.profile?.gender || '');
+        setTravelStyle(profile.profile?.travel_style || '');
+        setInterestsInput((profile.profile?.interests || []).join(', '));
+        setBudgetMin(
+          typeof profile.profile?.budget_min === 'number' ? String(profile.profile.budget_min) : ''
+        );
+        setBudgetMax(
+          typeof profile.profile?.budget_max === 'number' ? String(profile.profile.budget_max) : ''
+        );
       } catch (error) {
         Alert.alert('Unable to load profile', extractErrorMessage(error, 'Please try again.'));
       } finally {
@@ -45,16 +71,60 @@ export default function EditProfileScreen() {
     void load();
   }, []);
 
+  const normalizedInterests = useMemo(
+    () =>
+      interestsInput
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 20),
+    [interestsInput]
+  );
+
   const handleSave = async () => {
+    const parsedAge = parseOptionalNumber(age);
+    const parsedBudgetMin = parseOptionalNumber(budgetMin);
+    const parsedBudgetMax = parseOptionalNumber(budgetMax);
+
+    if (!name.trim()) {
+      Alert.alert('Name required', 'Add a name so other travelers can identify you.');
+      return;
+    }
+
+    if (Number.isNaN(parsedAge) || (typeof parsedAge === 'number' && parsedAge < 18)) {
+      Alert.alert('Invalid age', 'Age must be a valid number and at least 18.');
+      return;
+    }
+
+    if (Number.isNaN(parsedBudgetMin) || Number.isNaN(parsedBudgetMax)) {
+      Alert.alert('Invalid budget', 'Budget values must be valid numbers.');
+      return;
+    }
+
+    if (
+      typeof parsedBudgetMin === 'number' &&
+      typeof parsedBudgetMax === 'number' &&
+      parsedBudgetMin > parsedBudgetMax
+    ) {
+      Alert.alert('Invalid budget range', 'Maximum budget must be greater than or equal to minimum budget.');
+      return;
+    }
+
     try {
       setSaving(true);
       await updateMyProfile({
-        name: name.trim() || undefined,
-        age: age.trim() ? Number(age) : null,
-        bio: bio.trim() || undefined,
+        name: name.trim(),
+        age: parsedAge,
+        bio: bio.trim() || null,
+        location: location.trim() || null,
+        gender: gender.trim() || null,
+        travel_style: travelStyle.trim() || null,
+        interests: normalizedInterests.length ? normalizedInterests : [],
+        budget_min: parsedBudgetMin,
+        budget_max: parsedBudgetMax,
       });
       await refreshUser();
-      Alert.alert('Profile updated', 'Your profile changes have been saved.');
+      Alert.alert('Profile updated', 'Your traveler profile has been saved.');
       navigation.goBack();
     } catch (error) {
       Alert.alert('Unable to save', extractErrorMessage(error, 'Please try again.'));
@@ -76,14 +146,94 @@ export default function EditProfileScreen() {
       {loading ? (
         <ActivityIndicator size="large" color={COLORS.PRIMARY_PURPLE} style={styles.loader} />
       ) : (
-        <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Name</Text>
-            <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={COLORS.TEXT_MUTED} />
+            <TextInput
+              style={styles.input}
+              value={name}
+              onChangeText={setName}
+              placeholder="Your name"
+              placeholderTextColor={COLORS.TEXT_MUTED}
+            />
+          </View>
+          <View style={styles.row}>
+            <View style={styles.rowField}>
+              <Text style={styles.label}>Age</Text>
+              <TextInput
+                style={styles.input}
+                value={age}
+                onChangeText={setAge}
+                keyboardType="number-pad"
+                placeholder="28"
+                placeholderTextColor={COLORS.TEXT_MUTED}
+              />
+            </View>
+            <View style={styles.rowField}>
+              <Text style={styles.label}>Gender</Text>
+              <TextInput
+                style={styles.input}
+                value={gender}
+                onChangeText={setGender}
+                placeholder="Woman, man, non-binary..."
+                placeholderTextColor={COLORS.TEXT_MUTED}
+              />
+            </View>
           </View>
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Age</Text>
-            <TextInput style={styles.input} value={age} onChangeText={setAge} keyboardType="number-pad" placeholder="28" placeholderTextColor={COLORS.TEXT_MUTED} />
+            <Text style={styles.label}>Location</Text>
+            <TextInput
+              style={styles.input}
+              value={location}
+              onChangeText={setLocation}
+              placeholder="Current city or home base"
+              placeholderTextColor={COLORS.TEXT_MUTED}
+            />
+          </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Travel Style</Text>
+            <TextInput
+              style={styles.input}
+              value={travelStyle}
+              onChangeText={setTravelStyle}
+              placeholder="Adventure, luxury, foodie..."
+              placeholderTextColor={COLORS.TEXT_MUTED}
+            />
+          </View>
+          <View style={styles.inputGroup}>
+            <Text style={styles.label}>Interests</Text>
+            <TextInput
+              style={styles.input}
+              value={interestsInput}
+              onChangeText={setInterestsInput}
+              placeholder="Hiking, beaches, museums"
+              placeholderTextColor={COLORS.TEXT_MUTED}
+            />
+            <Text style={styles.helperText}>Separate interests with commas.</Text>
+          </View>
+          <View style={styles.row}>
+            <View style={styles.rowField}>
+              <Text style={styles.label}>Budget Min</Text>
+              <TextInput
+                style={styles.input}
+                value={budgetMin}
+                onChangeText={setBudgetMin}
+                keyboardType="number-pad"
+                placeholder="500"
+                placeholderTextColor={COLORS.TEXT_MUTED}
+              />
+            </View>
+            <View style={styles.rowField}>
+              <Text style={styles.label}>Budget Max</Text>
+              <TextInput
+                style={styles.input}
+                value={budgetMax}
+                onChangeText={setBudgetMax}
+                keyboardType="number-pad"
+                placeholder="2000"
+                placeholderTextColor={COLORS.TEXT_MUTED}
+              />
+            </View>
           </View>
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Bio</Text>
@@ -91,7 +241,7 @@ export default function EditProfileScreen() {
               style={[styles.input, styles.textArea]}
               value={bio}
               onChangeText={setBio}
-              placeholder="Tell fellow travelers a bit about yourself"
+              placeholder="Tell fellow travelers how you like to travel."
               placeholderTextColor={COLORS.TEXT_MUTED}
               multiline
             />
@@ -138,10 +288,22 @@ const styles = StyleSheet.create({
   inputGroup: {
     gap: 8,
   },
+  row: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  rowField: {
+    flex: 1,
+    gap: 8,
+  },
   label: {
     fontSize: 14,
     fontWeight: '700',
     color: COLORS.TEXT_PRIMARY,
+  },
+  helperText: {
+    fontSize: 12,
+    color: COLORS.TEXT_MUTED,
   },
   input: {
     minHeight: 52,
@@ -163,6 +325,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.PRIMARY_PURPLE,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 4,
   },
   primaryButtonText: {
     color: COLORS.WHITE,

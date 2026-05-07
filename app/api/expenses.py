@@ -165,7 +165,14 @@ def create_expense_endpoint(
         user_ids=offline_user_ids,
         title="New trip expense",
         body=payload.description,
-        data={"type": "expense.created", "trip_id": payload.trip_id, "expense_id": response.id},
+        data={
+            "type": "expense.created",
+            "trip_id": payload.trip_id,
+            "expense_id": response.id,
+            "entity_id": payload.trip_id,
+            "entity_type": "trip",
+            "deep_link": f"aventaro://trips/{payload.trip_id}",
+        },
     )
     return response
 
@@ -212,6 +219,14 @@ def settle_expense_endpoint(
         user_ids=offline_user_ids,
         title="Expense settled",
         body="A trip expense was settled",
-        data={"type": "expense.settled", "trip_id": trip_id, "expense_id": expense_id, "split_id": response.id},
+        data={
+            "type": "expense.settled",
+            "trip_id": trip_id,
+            "expense_id": expense_id,
+            "split_id": response.id,
+            "entity_id": trip_id,
+            "entity_type": "trip",
+            "deep_link": f"aventaro://trips/{trip_id}",
+        },
     )
     return response

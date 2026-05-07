@@ -31,7 +31,11 @@ from app.models.social import (
     StoryView,
 )
 from app.models.user import User
-from app.services.notifications import create_notification
+from app.services.notifications import (
+    NOTIFICATION_ENTITY_TYPE_POST,
+    NOTIFICATION_ENTITY_TYPE_USER,
+    create_notification,
+)
 from app.services.redis_runtime import invalidate_discover_cache, invalidate_social_cache
 from app.utils.config import get_settings
 
@@ -638,6 +642,8 @@ def like_post(db: Session, *, post_id: int, current_user_id: int) -> dict[str, o
                 user_id=post.user_id,
                 notification_type="post_liked",
                 message=f"{actor_name} liked your post",
+                entity_id=post.id,
+                entity_type=NOTIFICATION_ENTITY_TYPE_POST,
                 commit=False,
             )
         try:
@@ -689,6 +695,8 @@ def create_post_comment(
             user_id=post.user_id,
             notification_type="post_commented",
             message=f"{actor_name} commented on your post",
+            entity_id=post.id,
+            entity_type=NOTIFICATION_ENTITY_TYPE_POST,
             commit=False,
         )
     db.commit()
@@ -1036,6 +1044,8 @@ def follow_user(db: Session, *, follower_id: int, following_id: int) -> tuple[Fo
             user_id=following_id,
             notification_type="new_follower",
             message=f"{actor_name} started following you",
+            entity_id=follower_id,
+            entity_type=NOTIFICATION_ENTITY_TYPE_USER,
             commit=False,
         )
         try:
@@ -1191,6 +1201,24 @@ def create_report(
     }
 
 
+def list_reports(db: Session, *, limit: int = 50) -> list[Report]:
+    return db.scalars(
+        select(Report)
+        .options(selectinload(Report.reporter).selectinload(User.profile))
+        .order_by(Report.created_at.desc(), Report.id.desc())
+        .limit(limit)
+    ).all()
+
+
+def list_reports_by_reporter(db: Session, *, reporter_id: int, limit: int = 50) -> list[Report]:
+    return db.scalars(
+        select(Report)
+        .where(Report.reporter_id == reporter_id)
+        .order_by(Report.created_at.desc(), Report.id.desc())
+        .limit(limit)
+    ).all()
+
+
 def block_user(db: Session, *, blocker_id: int, blocked_id: int) -> dict[str, object]:
     if blocker_id == blocked_id:
         raise ValueError("You cannot block yourself")
@@ -1217,3 +1245,26 @@ def block_user(db: Session, *, blocker_id: int, blocked_id: int) -> dict[str, ob
     invalidate_discover_cache()
     invalidate_social_cache()
     return {"blocked": True, "user_id": blocked_id}
+
+
+def list_blocked_users(db: Session, *, blocker_id: int, limit: int = 100) -> list[User]:
+    return db.scalars(
+        select(User)
+        .join(Block, Block.blocked_id == User.id)
+        .options(selectinload(User.profile))
+        .where(Block.blocker_id == blocker_id)
+        .order_by(Block.id.desc())
+        .limit(limit)
+    ).all()
+
+
+def unblock_user(db: Session, *, blocker_id: int, blocked_id: int) -> dict[str, object]:
+    block = db.scalar(select(Block).where(Block.blocker_id == blocker_id, Block.blocked_id == blocked_id))
+    if block is None:
+        raise LookupError("Block relationship not found")
+
+    db.delete(block)
+    db.commit()
+    invalidate_discover_cache()
+    invalidate_social_cache()
+    return {"blocked": False, "user_id": blocked_id}

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Index, String
+from sqlalchemy import Boolean, DateTime, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -15,6 +15,9 @@ if TYPE_CHECKING:
     from app.models.growth import AnalyticsEvent, Boost, Referral
     from app.models.payments import Payment, Subscription
     from app.models.profile import Profile
+    from app.models.media import MediaAsset
+    from app.models.security import AuthSession, MfaChallenge, SecurityAuditLog
+    from app.models.monetization import BoostPurchase, RewardTransaction, UserRewardBalance
     from app.models.social import (
         Block,
         Collection,
@@ -40,6 +43,15 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True, index=True)
     referral_code: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(20), default="user", nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    failed_login_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    mfa_channel: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -129,3 +141,18 @@ class User(Base):
     paid_expenses: Mapped[list["Expense"]] = relationship(back_populates="payer")
     expense_splits: Mapped[list["ExpenseSplit"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     trip_activities: Mapped[list["TripActivity"]] = relationship(back_populates="user")
+    bookings: Mapped[list["Booking"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    order_history_entries: Mapped[list["OrderHistory"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    verification_requests: Mapped[list["VerificationRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="VerificationRequest.user_id",
+    )
+    # Monetization relationships
+    reward_transactions: Mapped[list["RewardTransaction"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    reward_balance: Mapped["UserRewardBalance | None"] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
+    boost_purchases: Mapped[list["BoostPurchase"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    auth_sessions: Mapped[list["AuthSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    mfa_challenges: Mapped[list["MfaChallenge"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    security_audit_logs: Mapped[list["SecurityAuditLog"]] = relationship(back_populates="user")
+    media_assets: Mapped[list["MediaAsset"]] = relationship(back_populates="user", cascade="all, delete-orphan")

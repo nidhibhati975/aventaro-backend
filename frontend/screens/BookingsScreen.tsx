@@ -1,6 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  FlatList,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,214 +12,552 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 
+import { TripCardSkeleton } from '../components/common/SkeletonLoader';
 import { useAuth } from '../contexts/AuthContext';
-import { fetchTripDiscover } from '../services/discoverService';
 import { extractErrorMessage } from '../services/api';
-import { errorLogger } from '../services/errorLogger';
-import { fetchPostsFeed } from '../services/socialService';
-import type { SocialPost, TripRecord } from '../services/types';
+import {
+  createReservation,
+  confirmBooking,
+  fetchBooking,
+  fetchBookingDetails,
+  fetchBookingHistory,
+  openBookingPaymentCheckout,
+  searchBookings,
+  type BookingSearchPayload,
+} from '../services/bookingService';
+import { getUserDisplayName, type BookingDetailsRecord, type BookingRecord, type BookingSearchDetailsRecord, type BookingSearchResultRecord } from '../services/types';
 import { COLORS } from '../theme/colors';
 
-type BookingCategory = 'flights' | 'hotels' | 'trains' | 'cabs' | 'activities' | 'packages';
-type BookingMode = 'roundTrip' | 'oneWay';
+type BookingTab = 'search' | 'history';
+type BookingCategory = 'hotel' | 'flight' | 'activity';
 
-type SearchFilters = {
-  from: string;
-  to: string;
-  departure: string;
-  returnDate: string;
-  travelers: string;
-};
-
-const CATEGORY_OPTIONS: Array<{ key: BookingCategory; label: string; icon: string }> = [
-  { key: 'flights', label: 'Flights', icon: 'airplane-outline' },
-  { key: 'hotels', label: 'Hotels', icon: 'bed-outline' },
-  { key: 'trains', label: 'Trains', icon: 'train-outline' },
-  { key: 'cabs', label: 'Cabs', icon: 'car-outline' },
-  { key: 'activities', label: 'Activities', icon: 'compass-outline' },
-  { key: 'packages', label: 'Packages', icon: 'cube-outline' },
+const SEARCH_OPTIONS: Array<{ key: BookingCategory; label: string; icon: string }> = [
+  { key: 'hotel', label: 'Hotels', icon: 'bed-outline' },
+  { key: 'flight', label: 'Flights', icon: 'airplane-outline' },
+  { key: 'activity', label: 'Activities', icon: 'compass-outline' },
 ];
 
-function normalizeKey(value: string | null | undefined) {
-  return value?.trim().toLowerCase() || '';
-}
+const HISTORY_PAGE_SIZE = 10;
 
-function parseDate(value: string | null | undefined) {
-  if (!value) {
-    return null;
+function formatCurrency(amount: number | null | undefined, currency: string | null | undefined = 'USD') {
+  if (typeof amount !== 'number' || Number.isNaN(amount)) {
+    return 'Unavailable';
   }
 
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  return `${currency || 'USD'} ${amount.toFixed(2)}`;
 }
 
-function formatCurrency(amount: number | null | undefined) {
-  if (!amount || Number.isNaN(amount)) {
+function formatDateTime(value: string | null | undefined) {
+  if (!value) {
     return 'Flexible';
   }
 
-  return `$${Math.round(amount)}`;
-}
-
-function formatTripDuration(trip: TripRecord) {
-  const start = parseDate(trip.start_date);
-  const end = parseDate(trip.end_date);
-
-  if (!start || !end) {
-    return 'Open dates';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
   }
 
-  const totalDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-  return `${totalDays} days`;
+  return parsed.toLocaleString();
 }
 
-function matchesCategory(trip: TripRecord, category: BookingCategory) {
-  const interests = (trip.interests || []).map((interest) => normalizeKey(interest));
-
-  switch (category) {
-    case 'flights':
-      return Boolean(trip.start_date);
-    case 'hotels':
-      return Boolean((trip.budget_max || trip.budget_min || 0) >= 1200);
-    case 'trains':
-      return interests.some((interest) => ['culture', 'city', 'heritage'].includes(interest));
-    case 'cabs':
-      return trip.capacity <= 4;
-    case 'activities':
-      return interests.length > 0;
-    case 'packages':
-      return true;
-    default:
-      return true;
+function renderPolicySummary(details: BookingSearchDetailsRecord | null) {
+  if (!details?.policies) {
+    return [];
   }
-}
 
-function deriveLocationMediaMap(posts: SocialPost[]) {
-  const nextMap: Record<string, string> = {};
-
-  posts.forEach((post) => {
-    if (post.media_type !== 'image' || !post.media_url) {
-      return;
-    }
-
-    const key = normalizeKey(post.location);
-    if (key && !nextMap[key]) {
-      nextMap[key] = post.media_url;
-    }
-  });
-
-  return nextMap;
+  return Object.entries(details.policies)
+    .slice(0, 3)
+    .map(([key, value]) => `${key.replace(/_/g, ' ')}: ${String(value)}`);
 }
 
 export default function BookingsScreen() {
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
   const { user } = useAuth();
-  const [loading, setLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [category, setCategory] = useState<BookingCategory>('flights');
-  const [mode, setMode] = useState<BookingMode>('roundTrip');
-  const [fromInput, setFromInput] = useState('');
-  const [toInput, setToInput] = useState('');
-  const [departureInput, setDepartureInput] = useState('');
-  const [returnInput, setReturnInput] = useState('');
-  const [travelersInput, setTravelersInput] = useState('1');
-  const [submittedFilters, setSubmittedFilters] = useState<SearchFilters>({
-    from: '',
-    to: '',
-    departure: '',
-    returnDate: '',
-    travelers: '1',
-  });
-  const [discoverTrips, setDiscoverTrips] = useState<TripRecord[]>([]);
-  const [posts, setPosts] = useState<SocialPost[]>([]);
+  const routeBookingId = Number(route.params?.bookingId || 0);
+  const [tab, setTab] = useState<BookingTab>('search');
+  const [category, setCategory] = useState<BookingCategory>('hotel');
+  const [location, setLocation] = useState('');
+  const [checkIn, setCheckIn] = useState('');
+  const [checkOut, setCheckOut] = useState('');
+  const [guests, setGuests] = useState('1');
+  const [loadingResults, setLoadingResults] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [results, setResults] = useState<BookingSearchResultRecord[]>([]);
+  const [selectedResult, setSelectedResult] = useState<BookingSearchResultRecord | null>(null);
+  const [selectedDetails, setSelectedDetails] = useState<BookingSearchDetailsRecord | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [reservation, setReservation] = useState<BookingDetailsRecord | null>(null);
+  const [reserving, setReserving] = useState(false);
+  const [startingCheckout, setStartingCheckout] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyRefreshing, setHistoryRefreshing] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [history, setHistory] = useState<BookingRecord[]>([]);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(true);
 
-  useEffect(() => {
-    if (!fromInput && user?.profile?.location) {
-      setFromInput(user.profile.location);
-      setSubmittedFilters((current) => ({ ...current, from: user.profile?.location || '' }));
-    }
-  }, [fromInput, user?.profile?.location]);
-
-  const loadInventory = useCallback(async () => {
-    setLoading(true);
-    setErrorMessage(null);
-
-    try {
-      const [tripsResult, postsResult] = await Promise.allSettled([
-        fetchTripDiscover(30),
-        fetchPostsFeed({ limit: 30, offset: 0 }),
-      ]);
-
-      setDiscoverTrips(
-        tripsResult.status === 'fulfilled' && Array.isArray(tripsResult.value) ? tripsResult.value : []
-      );
-      setPosts(postsResult.status === 'fulfilled' && Array.isArray(postsResult.value?.items) ? postsResult.value.items : []);
-
-      if (tripsResult.status === 'rejected' && postsResult.status === 'rejected') {
-        throw tripsResult.reason;
+  const loadHistory = useCallback(
+    async (mode: 'initial' | 'refresh' | 'more' = 'initial') => {
+      const nextOffset = mode === 'more' ? historyOffset : 0;
+      if (mode === 'initial') {
+        setHistoryLoading(true);
+      } else if (mode === 'refresh') {
+        setHistoryRefreshing(true);
+      } else {
+        setHistoryLoadingMore(true);
       }
-    } catch (error) {
-      errorLogger.logError(error, { source: 'BookingsScreen', context: { action: 'loadInventory' } });
-      setErrorMessage(extractErrorMessage(error, 'Unable to load travel inventory'));
-      setDiscoverTrips([]);
-      setPosts([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+
+      try {
+        setHistoryError(null);
+        const items = await fetchBookingHistory(HISTORY_PAGE_SIZE, nextOffset);
+        setHistory((current) => (mode === 'more' ? [...current, ...items] : items));
+        setHistoryOffset(nextOffset + items.length);
+        setHistoryHasMore(items.length >= HISTORY_PAGE_SIZE);
+      } catch (error) {
+        setHistoryError(extractErrorMessage(error, 'Unable to load booking history.'));
+      } finally {
+        setHistoryLoading(false);
+        setHistoryRefreshing(false);
+        setHistoryLoadingMore(false);
+      }
+    },
+    [historyOffset]
+  );
 
   useFocusEffect(
     useCallback(() => {
-      void loadInventory();
-    }, [loadInventory])
+      void loadHistory('initial');
+      if (reservation?.id) {
+        void fetchBooking(reservation.id)
+          .then((nextBooking) => setReservation(nextBooking))
+          .catch(() => undefined);
+      }
+      if (routeBookingId > 0) {
+        void fetchBooking(routeBookingId)
+          .then((nextBooking) => {
+            setReservation(nextBooking);
+            setTab('history');
+          })
+          .catch(() => undefined);
+      }
+    }, [loadHistory, reservation?.id, routeBookingId])
   );
 
-  const locationMediaMap = useMemo(() => deriveLocationMediaMap(posts), [posts]);
+  const handleSearch = useCallback(async () => {
+    const trimmedLocation = location.trim();
+    const guestCount = Number(guests || '1');
 
-  const filteredTrips = useMemo(() => {
-    const categoryMatches = discoverTrips.filter((trip) => matchesCategory(trip, category));
-    const categoryBase = categoryMatches.length ? categoryMatches : discoverTrips;
+    if (!trimmedLocation) {
+      Alert.alert('Destination required', 'Enter a location to search live travel inventory.');
+      return;
+    }
 
-    const destinationQuery = normalizeKey(submittedFilters.to);
-    const originQuery = normalizeKey(submittedFilters.from);
+    setLoadingResults(true);
+    setSearchError(null);
+    setSelectedResult(null);
+    setSelectedDetails(null);
+    setReservation(null);
 
-    return categoryBase
-      .filter((trip) => {
-        if (destinationQuery && !normalizeKey(trip.location).includes(destinationQuery)) {
-          return false;
+    try {
+      const payload: BookingSearchPayload = {
+        result_type: category,
+        location: trimmedLocation,
+        check_in: checkIn.trim() || null,
+        check_out: checkOut.trim() || null,
+        guests: Number.isFinite(guestCount) && guestCount > 0 ? guestCount : 1,
+      };
+      const items = await searchBookings(payload);
+      setResults(items);
+      if (!items.length) {
+        setSearchError('No live results matched this search yet.');
+      }
+    } catch (error) {
+      setResults([]);
+      setSearchError(extractErrorMessage(error, 'Unable to search bookings.'));
+    } finally {
+      setLoadingResults(false);
+    }
+  }, [category, checkIn, checkOut, guests, location]);
+
+  const handleSelectResult = useCallback(async (item: BookingSearchResultRecord) => {
+    setSelectedResult(item);
+    setReservation(null);
+    setLoadingDetails(true);
+    try {
+      const details = await fetchBookingDetails(item.result_type, item.external_id);
+      setSelectedDetails(details);
+    } catch (error) {
+      setSelectedDetails(null);
+      Alert.alert('Unable to load details', extractErrorMessage(error, 'Please try again.'));
+    } finally {
+      setLoadingDetails(false);
+    }
+  }, []);
+
+  const handleReserve = useCallback(async () => {
+    if (!selectedDetails || !user?.email) {
+      return;
+    }
+
+    try {
+      setReserving(true);
+      const response = await createReservation({
+        result_type: selectedDetails.result_type,
+        external_id: selectedDetails.external_id,
+        guest_name: getUserDisplayName(user),
+        guest_email: user.email,
+        payment_method: 'card',
+      });
+      setReservation(response.booking);
+      setTab('search');
+      Alert.alert('Reservation created', 'Your booking has been created. Complete payment to confirm it.');
+      void loadHistory('refresh');
+    } catch (error) {
+      Alert.alert('Unable to reserve', extractErrorMessage(error, 'Please try again.'));
+    } finally {
+      setReserving(false);
+    }
+  }, [loadHistory, selectedDetails, user]);
+
+  const handleCheckout = useCallback(async () => {
+    if (!reservation?.id) {
+      return;
+    }
+
+    try {
+      setStartingCheckout(true);
+      await openBookingPaymentCheckout(reservation.id);
+      Alert.alert('Stripe Checkout opened', 'Complete the payment in the browser, then return to Aventaro.');
+      void loadHistory('refresh');
+    } catch (error) {
+      Alert.alert('Unable to start checkout', extractErrorMessage(error, 'Please try again.'));
+    } finally {
+      setStartingCheckout(false);
+    }
+  }, [loadHistory, reservation?.id]);
+
+  const handleRefreshReservation = useCallback(async () => {
+    if (!reservation?.id) {
+      return;
+    }
+
+    try {
+      setStartingCheckout(true);
+      const refreshed = await confirmBooking(reservation.id);
+      setReservation(refreshed);
+      Alert.alert('Booking refreshed', 'Latest booking status has been synced from the backend.');
+      void loadHistory('refresh');
+    } catch (error) {
+      Alert.alert('Unable to refresh booking', extractErrorMessage(error, 'Please try again.'));
+    } finally {
+      setStartingCheckout(false);
+    }
+  }, [loadHistory, reservation?.id]);
+
+  const historyStatusColor = useCallback((status: string) => {
+    switch (status) {
+      case 'confirmed':
+      case 'completed':
+        return COLORS.SUCCESS_GREEN;
+      case 'cancelled':
+      case 'refunded':
+        return COLORS.ERROR_RED;
+      default:
+        return COLORS.PRIMARY_PURPLE;
+    }
+  }, []);
+
+  const detailPolicySummary = useMemo(() => renderPolicySummary(selectedDetails), [selectedDetails]);
+
+  const renderSearchBody = () => (
+    <ScrollView
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={loadingResults} onRefresh={() => void handleSearch()} tintColor={COLORS.PRIMARY_PURPLE} />}
+    >
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
+        {SEARCH_OPTIONS.map((option) => (
+          <TouchableOpacity
+            key={option.key}
+            activeOpacity={0.92}
+            style={[styles.categoryChip, category === option.key && styles.categoryChipActive]}
+            onPress={() => setCategory(option.key)}
+          >
+            <Ionicons
+              name={option.icon as any}
+              size={16}
+              color={category === option.key ? COLORS.WHITE : COLORS.TEXT_MUTED}
+            />
+            <Text style={[styles.categoryChipText, category === option.key && styles.categoryChipTextActive]}>
+              {option.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </ScrollView>
+
+      <View style={styles.searchCard}>
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>Destination</Text>
+          <TextInput
+            value={location}
+            onChangeText={setLocation}
+            style={styles.input}
+            placeholder="Where are you headed?"
+            placeholderTextColor={COLORS.TEXT_MUTED}
+          />
+        </View>
+        <View style={styles.row}>
+          <View style={styles.rowField}>
+            <Text style={styles.label}>Check-in</Text>
+            <TextInput
+              value={checkIn}
+              onChangeText={setCheckIn}
+              style={styles.input}
+              placeholder="2026-04-20"
+              placeholderTextColor={COLORS.TEXT_MUTED}
+            />
+          </View>
+          <View style={styles.rowField}>
+            <Text style={styles.label}>Check-out</Text>
+            <TextInput
+              value={checkOut}
+              onChangeText={setCheckOut}
+              style={styles.input}
+              placeholder="2026-04-24"
+              placeholderTextColor={COLORS.TEXT_MUTED}
+            />
+          </View>
+        </View>
+        <View style={styles.inputGroup}>
+          <Text style={styles.label}>Travelers</Text>
+          <TextInput
+            value={guests}
+            onChangeText={setGuests}
+            style={styles.input}
+            keyboardType="number-pad"
+            placeholder="1"
+            placeholderTextColor={COLORS.TEXT_MUTED}
+          />
+        </View>
+        <TouchableOpacity style={styles.primaryButton} onPress={() => void handleSearch()} disabled={loadingResults}>
+          {loadingResults ? (
+            <ActivityIndicator size="small" color={COLORS.WHITE} />
+          ) : (
+            <>
+              <Ionicons name="search-outline" size={18} color={COLORS.WHITE} />
+              <Text style={styles.primaryButtonText}>Search {SEARCH_OPTIONS.find((item) => item.key === category)?.label}</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {searchError ? (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>Search update</Text>
+          <Text style={styles.emptyText}>{searchError}</Text>
+        </View>
+      ) : null}
+
+      {loadingResults ? (
+        <View style={styles.skeletonList}>
+          <TripCardSkeleton />
+          <TripCardSkeleton />
+        </View>
+      ) : results.length ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Live Results</Text>
+          <View style={styles.resultList}>
+            {results.map((item) => (
+              <TouchableOpacity
+                key={`${item.result_type}:${item.external_id}`}
+                activeOpacity={0.92}
+                style={[
+                  styles.resultCard,
+                  selectedResult?.external_id === item.external_id && styles.resultCardActive,
+                ]}
+                onPress={() => void handleSelectResult(item)}
+              >
+                <View style={styles.resultHeader}>
+                  <Text style={styles.resultTitle}>{item.title}</Text>
+                  <Text style={styles.resultPrice}>{formatCurrency(item.price, item.currency)}</Text>
+                </View>
+                <Text style={styles.resultMeta}>{item.location}</Text>
+                <Text style={styles.resultMeta}>
+                  {item.provider_name}
+                  {typeof item.rating === 'number' ? ` | ${item.rating.toFixed(1)} rating` : ''}
+                </Text>
+                {item.description ? <Text style={styles.resultBody}>{item.description}</Text> : null}
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+      ) : null}
+
+      {selectedResult ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Selected Offer</Text>
+          <View style={styles.detailsCard}>
+            {loadingDetails ? (
+              <ActivityIndicator size="small" color={COLORS.PRIMARY_PURPLE} />
+            ) : selectedDetails ? (
+              <>
+                <Text style={styles.detailsTitle}>{selectedDetails.title}</Text>
+                <Text style={styles.detailsSubtitle}>{selectedDetails.location}</Text>
+                <Text style={styles.detailsPrice}>{formatCurrency(selectedDetails.price, selectedDetails.currency)}</Text>
+                {selectedDetails.description ? <Text style={styles.detailsBody}>{selectedDetails.description}</Text> : null}
+                {selectedDetails.amenities?.length ? (
+                  <View style={styles.tagRow}>
+                    {selectedDetails.amenities.slice(0, 6).map((amenity) => (
+                      <View key={amenity} style={styles.tag}>
+                        <Text style={styles.tagText}>{amenity}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+                {detailPolicySummary.length ? (
+                  <View style={styles.policyList}>
+                    {detailPolicySummary.map((policy) => (
+                      <Text key={policy} style={styles.policyText}>
+                        - {policy}
+                      </Text>
+                    ))}
+                  </View>
+                ) : null}
+                <TouchableOpacity style={styles.primaryButton} onPress={() => void handleReserve()} disabled={reserving}>
+                  {reserving ? (
+                    <ActivityIndicator size="small" color={COLORS.WHITE} />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle-outline" size={18} color={COLORS.WHITE} />
+                      <Text style={styles.primaryButtonText}>Reserve Now</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </>
+            ) : (
+              <Text style={styles.emptyText}>Choose a result to load details.</Text>
+            )}
+          </View>
+        </View>
+      ) : null}
+
+      {reservation ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Booking Confirmation</Text>
+          <View style={styles.confirmationCard}>
+            <Text style={styles.confirmationTitle}>Booking #{reservation.id}</Text>
+            <Text style={styles.confirmationMeta}>Status: {reservation.status}</Text>
+            <Text style={styles.confirmationMeta}>
+              Total: {formatCurrency(reservation.total_amount, reservation.currency)}
+            </Text>
+            <TouchableOpacity
+              style={styles.primaryButton}
+              onPress={() => void handleCheckout()}
+              disabled={startingCheckout}
+            >
+              {startingCheckout ? (
+                <ActivityIndicator size="small" color={COLORS.WHITE} />
+              ) : (
+                <>
+                  <Ionicons name="card-outline" size={18} color={COLORS.WHITE} />
+                  <Text style={styles.primaryButtonText}>Pay with Stripe Checkout</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.secondaryButton}
+              onPress={() => void handleRefreshReservation()}
+              disabled={startingCheckout}
+            >
+              <Text style={styles.secondaryButtonText}>Refresh Booking Status</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ) : null}
+    </ScrollView>
+  );
+
+  const renderHistoryItem = ({ item }: { item: BookingRecord }) => (
+    <TouchableOpacity
+      activeOpacity={0.92}
+      style={styles.historyCard}
+      onPress={() => {
+        void fetchBooking(item.id)
+          .then((booking) => setReservation(booking))
+          .catch((error) => Alert.alert('Unable to load booking', extractErrorMessage(error, 'Please try again.')));
+      }}
+    >
+      <View style={styles.historyHeader}>
+        <Text style={styles.historyTitle}>Booking #{item.id}</Text>
+        <Text style={[styles.historyStatus, { color: historyStatusColor(item.status) }]}>{item.status}</Text>
+      </View>
+      <Text style={styles.historyMeta}>{formatCurrency(item.total_amount, item.currency)}</Text>
+      <Text style={styles.historyMeta}>{formatDateTime(item.created_at)}</Text>
+    </TouchableOpacity>
+  );
+
+  const renderHistoryBody = () => {
+    if (historyLoading && !history.length) {
+      return (
+        <View style={styles.skeletonList}>
+          <TripCardSkeleton />
+          <TripCardSkeleton />
+        </View>
+      );
+    }
+
+    if (historyError && !history.length) {
+      return (
+        <View style={styles.emptyCard}>
+          <Text style={styles.emptyTitle}>History unavailable</Text>
+          <Text style={styles.emptyText}>{historyError}</Text>
+          <TouchableOpacity style={styles.secondaryButton} onPress={() => void loadHistory('initial')}>
+            <Text style={styles.secondaryButtonText}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <FlatList
+        data={history}
+        keyExtractor={(item) => String(item.id)}
+        contentContainerStyle={styles.historyList}
+        renderItem={renderHistoryItem}
+        refreshControl={
+          <RefreshControl
+            refreshing={historyRefreshing}
+            onRefresh={() => void loadHistory('refresh')}
+            tintColor={COLORS.PRIMARY_PURPLE}
+          />
         }
-
-        if (originQuery && originQuery === normalizeKey(trip.location)) {
-          return false;
+        onEndReached={() => {
+          if (!historyLoadingMore && historyHasMore) {
+            void loadHistory('more');
+          }
+        }}
+        onEndReachedThreshold={0.4}
+        ListFooterComponent={
+          historyLoadingMore ? (
+            <View style={styles.footerLoader}>
+              <ActivityIndicator size="small" color={COLORS.PRIMARY_PURPLE} />
+            </View>
+          ) : null
         }
-
-        return true;
-      })
-      .map((trip) => ({
-        ...trip,
-        heroMediaUrl: locationMediaMap[normalizeKey(trip.location)] || null,
-      }))
-      .slice(0, 8);
-  }, [category, discoverTrips, locationMediaMap, submittedFilters.from, submittedFilters.to]);
-
-  const handleSearch = () => {
-    setSubmittedFilters({
-      from: fromInput.trim(),
-      to: toInput.trim(),
-      departure: departureInput.trim(),
-      returnDate: returnInput.trim(),
-      travelers: travelersInput.trim() || '1',
-    });
+        ListEmptyComponent={
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyTitle}>No bookings yet</Text>
+            <Text style={styles.emptyText}>Completed reservations and paid bookings will appear here.</Text>
+          </View>
+        }
+      />
+    );
   };
-
-  const destinationChips = useMemo(
-    () =>
-      Array.from(new Set(discoverTrips.map((trip) => trip.location).filter(Boolean))).slice(0, 6),
-    [discoverTrips]
-  );
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -224,230 +565,22 @@ export default function BookingsScreen() {
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerButton}>
           <Ionicons name="arrow-back" size={22} color={COLORS.TEXT_PRIMARY} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Book Travel</Text>
+        <Text style={styles.headerTitle}>Bookings</Text>
         <View style={styles.headerButton} />
       </View>
 
-      {loading ? (
-        <View style={styles.centerState}>
-          <ActivityIndicator size="large" color={COLORS.PRIMARY_PURPLE} />
-        </View>
-      ) : errorMessage ? (
-        <View style={styles.centerState}>
-          <Text style={styles.emptyTitle}>Travel inventory unavailable</Text>
-          <Text style={styles.emptyText}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.searchButton} onPress={() => void loadInventory()}>
-            <Text style={styles.searchButtonText}>Retry</Text>
+      <View style={styles.tabRow}>
+        {(['search', 'history'] as BookingTab[]).map((value) => (
+          <TouchableOpacity key={value} style={styles.tabButton} onPress={() => setTab(value)}>
+            <Text style={[styles.tabText, tab === value && styles.tabTextActive]}>
+              {value === 'search' ? 'Search' : 'Order History'}
+            </Text>
+            {tab === value ? <View style={styles.tabUnderline} /> : null}
           </TouchableOpacity>
-        </View>
-      ) : (
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryRow}>
-            {CATEGORY_OPTIONS.map((option) => (
-              <TouchableOpacity
-                key={option.key}
-                activeOpacity={0.92}
-                style={[styles.categoryChip, category === option.key && styles.categoryChipActive]}
-                onPress={() => setCategory(option.key)}
-              >
-                <Ionicons
-                  name={option.icon}
-                  size={16}
-                  color={category === option.key ? COLORS.WHITE : COLORS.TEXT_MUTED}
-                />
-                <Text style={[styles.categoryChipText, category === option.key && styles.categoryChipTextActive]}>
-                  {option.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+        ))}
+      </View>
 
-          <View style={styles.searchCard}>
-            <View style={styles.modeRow}>
-              <TouchableOpacity
-                activeOpacity={0.92}
-                style={[styles.modeButton, mode === 'roundTrip' && styles.modeButtonActive]}
-                onPress={() => setMode('roundTrip')}
-              >
-                <Text style={[styles.modeButtonText, mode === 'roundTrip' && styles.modeButtonTextActive]}>
-                  Round Trip
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                activeOpacity={0.92}
-                style={[styles.modeButton, mode === 'oneWay' && styles.modeButtonActive]}
-                onPress={() => setMode('oneWay')}
-              >
-                <Text style={[styles.modeButtonText, mode === 'oneWay' && styles.modeButtonTextActive]}>One Way</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <View style={styles.fieldRow}>
-                <Ionicons name="navigate-outline" size={18} color={COLORS.PRIMARY_PURPLE} />
-                <View style={styles.fieldText}>
-                  <Text style={styles.fieldLabel}>From</Text>
-                  <TextInput
-                    value={fromInput}
-                    onChangeText={setFromInput}
-                    placeholder="Where are you leaving from?"
-                    placeholderTextColor={COLORS.TEXT_MUTED}
-                    style={styles.fieldInput}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.fieldDivider} />
-
-              <View style={styles.fieldRow}>
-                <Ionicons name="location-outline" size={18} color={COLORS.PRIMARY_PURPLE} />
-                <View style={styles.fieldText}>
-                  <Text style={styles.fieldLabel}>To</Text>
-                  <TextInput
-                    value={toInput}
-                    onChangeText={setToInput}
-                    placeholder="Where are you going?"
-                    placeholderTextColor={COLORS.TEXT_MUTED}
-                    style={styles.fieldInput}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.fieldDivider} />
-
-              <View style={styles.fieldRow}>
-                <Ionicons name="calendar-outline" size={18} color={COLORS.PRIMARY_PURPLE} />
-                <View style={styles.fieldText}>
-                  <Text style={styles.fieldLabel}>Departure</Text>
-                  <TextInput
-                    value={departureInput}
-                    onChangeText={setDepartureInput}
-                    placeholder="Select date"
-                    placeholderTextColor={COLORS.TEXT_MUTED}
-                    style={styles.fieldInput}
-                  />
-                </View>
-              </View>
-
-              {mode === 'roundTrip' ? (
-                <>
-                  <View style={styles.fieldDivider} />
-                  <View style={styles.fieldRow}>
-                    <Ionicons name="calendar-outline" size={18} color={COLORS.PRIMARY_PURPLE} />
-                    <View style={styles.fieldText}>
-                      <Text style={styles.fieldLabel}>Return</Text>
-                      <TextInput
-                        value={returnInput}
-                        onChangeText={setReturnInput}
-                        placeholder="Select date"
-                        placeholderTextColor={COLORS.TEXT_MUTED}
-                        style={styles.fieldInput}
-                      />
-                    </View>
-                  </View>
-                </>
-              ) : null}
-
-              <View style={styles.fieldDivider} />
-
-              <View style={styles.fieldRow}>
-                <Ionicons name="people-outline" size={18} color={COLORS.PRIMARY_PURPLE} />
-                <View style={styles.fieldText}>
-                  <Text style={styles.fieldLabel}>Travelers</Text>
-                  <TextInput
-                    value={travelersInput}
-                    onChangeText={setTravelersInput}
-                    placeholder="1"
-                    placeholderTextColor={COLORS.TEXT_MUTED}
-                    keyboardType="number-pad"
-                    style={styles.fieldInput}
-                  />
-                </View>
-              </View>
-            </View>
-
-            <TouchableOpacity activeOpacity={0.92} style={styles.searchButton} onPress={handleSearch}>
-              <Ionicons name="search-outline" size={18} color={COLORS.WHITE} />
-              <Text style={styles.searchButtonText}>Search Travel</Text>
-            </TouchableOpacity>
-          </View>
-
-          {destinationChips.length ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.destinationRow}>
-              {destinationChips.map((destination) => (
-                <TouchableOpacity
-                  key={destination}
-                  activeOpacity={0.92}
-                  style={styles.destinationChip}
-                  onPress={() => {
-                    setToInput(destination);
-                    setSubmittedFilters((current) => ({ ...current, to: destination }));
-                  }}
-                >
-                  <Text style={styles.destinationChipText}>{destination}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          ) : null}
-
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Best Deals</Text>
-            <View style={styles.aiBadge}>
-              <Ionicons name="sparkles-outline" size={12} color={COLORS.PRIMARY_PURPLE} />
-              <Text style={styles.aiBadgeText}>AI Curated</Text>
-            </View>
-          </View>
-
-          {filteredTrips.length ? (
-            <View style={styles.dealList}>
-              {filteredTrips.map((trip) => (
-                <TouchableOpacity
-                  key={trip.id}
-                  activeOpacity={0.94}
-                  style={styles.dealCard}
-                  onPress={() => navigation.navigate('TripDetails', { tripId: trip.id })}
-                >
-                  <View style={styles.dealHeader}>
-                    <Text style={styles.dealTitle}>{trip.title}</Text>
-                    <View style={styles.dealTag}>
-                      <Text style={styles.dealTagText}>{trip.interests?.[0] || 'Curated'}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.dealGrid}>
-                    <View style={styles.dealBlock}>
-                      <Text style={styles.dealValue}>{formatCurrency(trip.budget_min || trip.budget_max)}</Text>
-                      <Text style={styles.dealCaption}>Budget</Text>
-                    </View>
-                    <View style={styles.dealCenter}>
-                      <Ionicons name="arrow-forward" size={18} color={COLORS.PRIMARY_PURPLE} />
-                      <Text style={styles.dealDuration}>{formatTripDuration(trip)}</Text>
-                    </View>
-                    <View style={[styles.dealBlock, styles.dealBlockRight]}>
-                      <Text style={styles.dealValue}>{trip.location}</Text>
-                      <Text style={styles.dealCaption}>{trip.approved_member_count}/{trip.capacity} joined</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.dealFooter}>
-                    <Text style={styles.dealMeta}>
-                      {submittedFilters.departure || formatTripDuration(trip)} - {submittedFilters.travelers || '1'} traveler
-                    </Text>
-                    <TouchableOpacity activeOpacity={0.92} style={styles.selectButton}>
-                      <Text style={styles.selectButtonText}>Select</Text>
-                    </TouchableOpacity>
-                  </View>
-                </TouchableOpacity>
-              ))}
-            </View>
-          ) : (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyTitle}>No live travel deals matched</Text>
-              <Text style={styles.emptyText}>Try another destination or category to explore live Aventaro trips.</Text>
-            </View>
-          )}
-        </ScrollView>
-      )}
+      {tab === 'search' ? renderSearchBody() : renderHistoryBody()}
     </SafeAreaView>
   );
 }
@@ -455,14 +588,13 @@ export default function BookingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: COLORS.SURFACE,
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 8,
     paddingBottom: 12,
   },
   headerButton: {
@@ -472,32 +604,50 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '800',
     color: COLORS.TEXT_PRIMARY,
   },
-  content: {
-    paddingBottom: 28,
+  tabRow: {
+    flexDirection: 'row',
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.BORDER_SOFT,
   },
-  centerState: {
+  tabButton: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 32,
-    gap: 10,
+    gap: 8,
+    paddingVertical: 12,
+  },
+  tabText: {
+    fontSize: 14,
+    color: COLORS.TEXT_MUTED,
+  },
+  tabTextActive: {
+    color: COLORS.PRIMARY_PURPLE,
+    fontWeight: '700',
+  },
+  tabUnderline: {
+    width: '70%',
+    height: 3,
+    borderRadius: 999,
+    backgroundColor: COLORS.PRIMARY_PURPLE,
+  },
+  content: {
+    padding: 16,
+    gap: 16,
+    paddingBottom: 28,
   },
   categoryRow: {
-    paddingHorizontal: 16,
-    paddingBottom: 12,
     gap: 10,
   },
   categoryChip: {
     minHeight: 38,
     borderRadius: 19,
     paddingHorizontal: 14,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: COLORS.SURFACE,
     borderWidth: 1,
-    borderColor: '#EFE8FF',
+    borderColor: COLORS.BORDER_SOFT,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -515,225 +665,226 @@ const styles = StyleSheet.create({
     color: COLORS.WHITE,
   },
   searchCard: {
-    marginHorizontal: 16,
-    borderRadius: 24,
-    backgroundColor: '#FFFFFF',
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: '#EFE8FF',
-    padding: 12,
-    gap: 14,
-  },
-  modeRow: {
-    flexDirection: 'row',
-    borderRadius: 16,
-    backgroundColor: '#F6F1FF',
-    padding: 4,
-  },
-  modeButton: {
-    flex: 1,
-    minHeight: 44,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modeButtonActive: {
-    backgroundColor: COLORS.PRIMARY_PURPLE,
-  },
-  modeButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.TEXT_MUTED,
-  },
-  modeButtonTextActive: {
-    color: COLORS.WHITE,
-  },
-  fieldGroup: {
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#F3EEFF',
-    overflow: 'hidden',
-  },
-  fieldRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    borderColor: COLORS.BORDER_SOFT,
+    backgroundColor: COLORS.SURFACE,
+    padding: 16,
     gap: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
   },
-  fieldDivider: {
-    height: 1,
-    backgroundColor: '#F4EEFF',
-  },
-  fieldText: {
-    flex: 1,
-    gap: 4,
-  },
-  fieldLabel: {
-    fontSize: 12,
-    color: COLORS.TEXT_MUTED,
-  },
-  fieldInput: {
-    paddingVertical: 0,
-    fontSize: 16,
-    color: COLORS.TEXT_PRIMARY,
-  },
-  searchButton: {
-    minHeight: 50,
-    borderRadius: 16,
-    backgroundColor: COLORS.PRIMARY_PURPLE,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+  inputGroup: {
     gap: 8,
   },
-  searchButtonText: {
-    fontSize: 15,
+  row: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  rowField: {
+    flex: 1,
+    gap: 8,
+  },
+  label: {
+    fontSize: 13,
     fontWeight: '700',
-    color: COLORS.WHITE,
+    color: COLORS.TEXT_PRIMARY,
   },
-  destinationRow: {
-    paddingHorizontal: 16,
-    paddingTop: 14,
-    gap: 10,
-  },
-  destinationChip: {
-    minHeight: 34,
-    borderRadius: 17,
+  input: {
+    minHeight: 48,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER,
+    backgroundColor: COLORS.BACKGROUND,
     paddingHorizontal: 14,
-    backgroundColor: '#F5F0FF',
+    color: COLORS.TEXT_PRIMARY,
+  },
+  primaryButton: {
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: COLORS.PRIMARY_PURPLE,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
   },
-  destinationChipText: {
+  primaryButtonText: {
+    color: COLORS.WHITE,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  secondaryButton: {
+    minHeight: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    backgroundColor: COLORS.SURFACE,
+  },
+  secondaryButtonText: {
+    color: COLORS.TEXT_PRIMARY,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  section: {
+    gap: 12,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.TEXT_PRIMARY,
+  },
+  resultList: {
+    gap: 12,
+  },
+  resultCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER_SOFT,
+    backgroundColor: COLORS.SURFACE,
+    padding: 16,
+    gap: 8,
+  },
+  resultCardActive: {
+    borderColor: COLORS.PRIMARY_PURPLE,
+    shadowColor: COLORS.SHADOW,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  resultHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  resultTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.TEXT_PRIMARY,
+  },
+  resultPrice: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.PRIMARY_PURPLE,
+  },
+  resultMeta: {
     fontSize: 13,
+    color: COLORS.TEXT_SECONDARY,
+  },
+  resultBody: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: COLORS.TEXT_SECONDARY,
+  },
+  detailsCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER_SOFT,
+    backgroundColor: COLORS.SURFACE,
+    padding: 16,
+    gap: 10,
+  },
+  detailsTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: COLORS.TEXT_PRIMARY,
+  },
+  detailsSubtitle: {
+    fontSize: 14,
+    color: COLORS.TEXT_SECONDARY,
+  },
+  detailsPrice: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.PRIMARY_PURPLE,
+  },
+  detailsBody: {
+    fontSize: 14,
+    lineHeight: 22,
+    color: COLORS.TEXT_SECONDARY,
+  },
+  tagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  tag: {
+    borderRadius: 999,
+    backgroundColor: COLORS.SURFACE_MUTED,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  tagText: {
+    fontSize: 12,
     fontWeight: '600',
     color: COLORS.PRIMARY_PURPLE,
   },
-  sectionHeader: {
-    marginTop: 20,
-    marginBottom: 12,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  policyList: {
+    gap: 4,
   },
-  sectionTitle: {
-    fontSize: 24,
+  policyText: {
+    fontSize: 13,
+    lineHeight: 20,
+    color: COLORS.TEXT_SECONDARY,
+  },
+  confirmationCard: {
+    borderRadius: 20,
+    padding: 16,
+    backgroundColor: COLORS.SURFACE_MUTED,
+    gap: 10,
+  },
+  confirmationTitle: {
+    fontSize: 18,
     fontWeight: '800',
     color: COLORS.TEXT_PRIMARY,
   },
-  aiBadge: {
-    minHeight: 28,
-    borderRadius: 14,
-    paddingHorizontal: 10,
-    backgroundColor: '#F5F0FF',
-    flexDirection: 'row',
-    alignItems: 'center',
+  confirmationMeta: {
+    fontSize: 14,
+    color: COLORS.TEXT_SECONDARY,
+  },
+  historyList: {
+    padding: 16,
+    gap: 12,
+    paddingBottom: 28,
+  },
+  historyCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER_SOFT,
+    backgroundColor: COLORS.SURFACE,
+    padding: 16,
     gap: 6,
   },
-  aiBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: COLORS.PRIMARY_PURPLE,
-  },
-  dealList: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  dealCard: {
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#EFE8FF',
-    padding: 16,
-    gap: 14,
-  },
-  dealHeader: {
+  historyHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
-  dealTitle: {
-    flex: 1,
+  historyTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.TEXT_PRIMARY,
   },
-  dealTag: {
-    minHeight: 24,
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    backgroundColor: '#EAFBF2',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dealTagText: {
-    fontSize: 11,
+  historyStatus: {
+    fontSize: 13,
     fontWeight: '700',
-    color: '#1FA45B',
+    textTransform: 'capitalize',
   },
-  dealGrid: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  dealBlock: {
-    flex: 1,
-    gap: 4,
-  },
-  dealBlockRight: {
-    alignItems: 'flex-end',
-  },
-  dealValue: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: COLORS.TEXT_PRIMARY,
-  },
-  dealCaption: {
-    fontSize: 12,
-    color: COLORS.TEXT_MUTED,
-  },
-  dealCenter: {
-    alignItems: 'center',
-    gap: 6,
-  },
-  dealDuration: {
-    fontSize: 12,
-    color: COLORS.TEXT_SECONDARY,
-  },
-  dealFooter: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  dealMeta: {
-    flex: 1,
+  historyMeta: {
     fontSize: 13,
     color: COLORS.TEXT_SECONDARY,
   },
-  selectButton: {
-    minHeight: 38,
-    minWidth: 88,
-    borderRadius: 19,
-    backgroundColor: COLORS.PRIMARY_PURPLE,
+  footerLoader: {
+    paddingVertical: 16,
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-  },
-  selectButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.WHITE,
   },
   emptyCard: {
-    marginHorizontal: 16,
     borderRadius: 20,
     padding: 24,
-    backgroundColor: '#F7F2FF',
+    backgroundColor: COLORS.BACKGROUND,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
@@ -750,4 +901,8 @@ const styles = StyleSheet.create({
     color: COLORS.TEXT_SECONDARY,
     textAlign: 'center',
   },
+  skeletonList: {
+    gap: 12,
+  },
 });
+

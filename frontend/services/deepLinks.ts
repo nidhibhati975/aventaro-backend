@@ -126,6 +126,19 @@ export async function handleIncomingUrl(url: string | null | undefined) {
     return true;
   }
 
+  if (/^\/trips\/\d+$/.test(normalizedPath)) {
+    const tripId = toNumber(normalizedPath.split('/').pop() || null);
+    if (!tripId) {
+      return false;
+    }
+
+    navigate('AppStack', {
+      screen: 'TripDetails',
+      params: { tripId },
+    });
+    return true;
+  }
+
   if (normalizedPath === '/chat/conversation') {
     const conversationId = parsedUrl.params.conversationId || null;
     if (!conversationId) {
@@ -139,6 +152,11 @@ export async function handleIncomingUrl(url: string | null | undefined) {
     return true;
   }
 
+  if (/^\/messages\/[^/]+$/.test(normalizedPath) || /^\/matches\/[^/]+$/.test(normalizedPath)) {
+    navigateToPath(APP_PATHS.TAB_CONNECT);
+    return true;
+  }
+
   if (normalizedPath === '/profile/public') {
     const userId = toNumber(parsedUrl.params.userId || null);
     if (!userId) {
@@ -149,6 +167,42 @@ export async function handleIncomingUrl(url: string | null | undefined) {
       screen: 'PublicProfile',
       params: { userId },
     });
+    return true;
+  }
+
+  if (/^\/users\/\d+$/.test(normalizedPath)) {
+    const userId = toNumber(normalizedPath.split('/').pop() || null);
+    if (!userId) {
+      return false;
+    }
+
+    navigate('AppStack', {
+      screen: 'PublicProfile',
+      params: { userId },
+    });
+    return true;
+  }
+
+  if (/^\/bookings\/\d+$/.test(normalizedPath)) {
+    const bookingId = toNumber(normalizedPath.split('/').pop() || null);
+    if (!bookingId) {
+      return false;
+    }
+
+    navigate('AppStack', {
+      screen: 'Bookings',
+      params: { bookingId },
+    });
+    return true;
+  }
+
+  if (/^\/payments\/[^/]+$/.test(normalizedPath)) {
+    navigateToPath(APP_PATHS.SCREEN_PAYMENTS);
+    return true;
+  }
+
+  if (/^\/verification\/[^/]+$/.test(normalizedPath)) {
+    navigateToPath(APP_PATHS.SCREEN_PRIVACY_SECURITY);
     return true;
   }
 

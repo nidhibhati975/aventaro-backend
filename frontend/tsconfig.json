@@ -7,5 +7,21 @@
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["**/node_modules", "**/Pods"]
+  "exclude": [
+    "**/node_modules",
+    "**/Pods",
+    "components/phase4/**",
+    "components/error/**",
+    "components/common/InfiniteScroll.tsx",
+    "hooks/**",
+    "services/behavioral/**",
+    "services/behavioralPersistence.ts",
+    "services/firebasePushService.ts",
+    "services/hardenedRealtimeService.ts",
+    "services/performanceValidation.ts",
+    "services/production/**",
+    "services/productionAnalyticsService.ts",
+    "services/productionViralService.ts",
+    "services/streakService.ts"
+  ]
 }

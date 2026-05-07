@@ -108,6 +108,7 @@
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
+				7A0B9C112F42A3E400F1A001 /* Copy GoogleService-Info.plist */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				00EEFC60759A1932668264C0 /* [CP] Embed Pods Frameworks */,
 				E235C05ADACE081382539298 /* [CP] Copy Pods Resources */,
@@ -235,6 +236,23 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-AventaroBareTmp/Pods-AventaroBareTmp-resources.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		7A0B9C112F42A3E400F1A001 /* Copy GoogleService-Info.plist */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/AventaroBareTmp/GoogleService-Info.plist",
+			);
+			name = "Copy GoogleService-Info.plist";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/GoogleService-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "GOOGLE_SERVICE_PLIST=\"${SRCROOT}/AventaroBareTmp/GoogleService-Info.plist\"\nAPP_BUNDLE_PATH=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app\"\nif [ -f \"$GOOGLE_SERVICE_PLIST\" ]; then\n  mkdir -p \"$APP_BUNDLE_PATH\"\n  cp \"$GOOGLE_SERVICE_PLIST\" \"$APP_BUNDLE_PATH/GoogleService-Info.plist\"\nelse\n  echo \"warning: GoogleService-Info.plist not found at ${SRCROOT}/AventaroBareTmp/GoogleService-Info.plist\"\nfi\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */

@@ -32,7 +32,11 @@ import TripDetailsScreen from './screens/TripDetailsScreen';
 import TwoFactorAuthScreen from './screens/TwoFactorAuthScreen';
 import ChatConversationScreen from './screens/ChatConversationScreen';
 import { handleIncomingUrl } from './services/deepLinks';
-import { ensureNotificationPermission } from './services/deviceNotifications';
+import {
+  ensureNotificationPermission,
+  flushPendingNotificationNavigation,
+  teardownDeviceNotifications,
+} from './services/deviceNotifications';
 import { setServerErrorHandler } from './services/api';
 import { errorLogger } from './services/errorLogger';
 import { initializeCrashMonitoring } from './services/sentry';
@@ -191,13 +195,28 @@ function AppShell() {
 
   useEffect(() => {
     if (!user) {
+      void teardownDeviceNotifications().catch((error) => {
+        errorLogger.logError(error, {
+          source: 'App',
+          context: { action: 'teardownDeviceNotifications' },
+        });
+      });
       return;
     }
 
-    void ensureNotificationPermission().catch((error) => {
-      errorLogger.logError(error, { source: 'App', context: { action: 'ensureNotificationPermission' } });
-    });
-  }, [user]);
+    if (!navigationReady) {
+      return;
+    }
+
+    void ensureNotificationPermission()
+      .then(() => flushPendingNotificationNavigation())
+      .catch((error) => {
+        errorLogger.logError(error, {
+          source: 'App',
+          context: { action: 'ensureNotificationPermission' },
+        });
+      });
+  }, [navigationReady, user]);
 
   useEffect(() => {
     if (loading) {

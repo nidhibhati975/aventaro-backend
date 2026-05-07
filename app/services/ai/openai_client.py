@@ -16,7 +16,7 @@ from app.utils.config import get_settings
 
 
 logger = logging.getLogger("aventaro.ai")
-OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
+OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,25 @@ def _truncate_text(value: str, max_chars: int) -> str:
     return f"{normalized[: max_chars - 64].rstrip()}\n\n[truncated]"
 
 
+def _extract_responses_text(response_payload: dict[str, Any]) -> str:
+    direct = response_payload.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    parts: list[str] = []
+    for item in response_payload.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    if parts:
+        return "".join(parts)
+    raise ValueError("OpenAI response did not include output text")
+
+
 def _log_usage(
     *,
     request_context: dict[str, Any] | None,
@@ -56,6 +75,13 @@ def _log_usage(
     fallback_used: bool,
 ) -> None:
     context = request_context or {}
+    usage_collector = context.get("usage_collector")
+    if isinstance(usage_collector, dict):
+        usage_collector["model"] = model
+        usage_collector["prompt_tokens"] = int(usage_collector.get("prompt_tokens") or 0) + prompt_tokens
+        usage_collector["completion_tokens"] = int(usage_collector.get("completion_tokens") or 0) + completion_tokens
+        usage_collector["total_tokens"] = int(usage_collector.get("total_tokens") or 0) + total_tokens
+        usage_collector["fallback_used"] = bool(usage_collector.get("fallback_used")) or fallback_used
     logger.info(
         "ai_usage",
         extra={
@@ -90,15 +116,14 @@ async def generate_response(
     system_prompt = _truncate_text(system_prompt, min(settings.ai_prompt_max_chars, 2500))
     request_started_at = time.perf_counter()
     timeout = httpx.Timeout(settings.ai_request_timeout_seconds, connect=1.0)
+    text_format = response_format or {"type": "json_object"}
     payload = {
         "model": settings.model_name,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
+        "instructions": system_prompt,
+        "input": prompt,
         "temperature": temperature,
-        "max_tokens": max_output_tokens or settings.ai_max_output_tokens,
-        "response_format": response_format or {"type": "json_object"},
+        "max_output_tokens": max_output_tokens or settings.ai_max_output_tokens,
+        "text": {"format": text_format},
     }
     headers = {
         "Authorization": f"Bearer {settings.openai_api_key}",
@@ -108,20 +133,20 @@ async def generate_response(
     for attempt in range(1, 3):
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(OPENAI_CHAT_COMPLETIONS_URL, headers=headers, json=payload)
+                response = await client.post(OPENAI_RESPONSES_URL, headers=headers, json=payload)
             if response.status_code in {500, 502, 503, 504} and attempt < 2:
                 await asyncio.sleep(0.2 * attempt)
                 continue
             response.raise_for_status()
 
             response_payload = response.json()
-            content = response_payload["choices"][0]["message"]["content"]
+            content = _extract_responses_text(response_payload)
             usage = response_payload.get("usage") or {}
             result = OpenAIResponse(
                 content=content,
                 model=response_payload.get("model", settings.model_name),
-                prompt_tokens=int(usage.get("prompt_tokens") or 0),
-                completion_tokens=int(usage.get("completion_tokens") or 0),
+                prompt_tokens=int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+                completion_tokens=int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
                 total_tokens=int(usage.get("total_tokens") or 0),
             )
             _log_usage(

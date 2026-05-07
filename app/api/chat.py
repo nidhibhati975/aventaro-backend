@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from anyio import from_thread
-from fastapi import APIRouter, Depends, Header, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -14,10 +15,11 @@ from app.db.session import SessionLocal
 from app.db.session import get_db
 from app.models.chat import ConversationType, Message, MessageStatus
 from app.models.user import User
-from app.services.auth import decode_access_token, extract_bearer_token, get_current_user
+from app.services.auth import assert_access_session_valid, decode_access_token, extract_bearer_token, get_current_user
 from app.services.chat import (
     count_unread_messages,
     create_message,
+    acknowledge_message_delivery,
     get_conversation as get_conversation_service,
     get_or_create_direct_conversation,
     list_conversations as list_conversations_service,
@@ -28,6 +30,13 @@ from app.services.chat import (
 )
 from app.services.chat_realtime import chat_connection_manager
 from app.services.idempotency import IdempotencyClaim, claim_idempotency, clear_idempotency_claim, store_idempotent_response
+from app.services.media import (
+    MediaConfigurationError,
+    MediaValidationError,
+    complete_media_upload,
+    create_presigned_media_upload,
+    get_media_upload_progress,
+)
 from app.services.push_notifications import send_push_notification
 from app.services.rate_limit import rate_limit, rate_limiter
 from app.services.trip_collaboration import build_trip_room_name, fetch_trip_for_collaboration, require_trip_member, send_group_message
@@ -62,6 +71,9 @@ class UserSummary(BaseModel):
 class ChatSendRequest(BaseModel):
     recipient_user_id: int = Field(gt=0)
     content: str = Field(min_length=1, max_length=2000)
+    media: list[str] = Field(default_factory=list, max_length=8)
+    reply_to: int | None = Field(default=None, gt=0)
+    local_id: str | None = Field(default=None, max_length=128)
 
 
 class GroupChatSendRequest(BaseModel):
@@ -75,11 +87,83 @@ class ChatMessageRead(BaseModel):
     id: int
     conversation_id: str
     content: str
+    client_message_id: str | None = None
     message_status: MessageStatus
     read_at: object | None = None
     created_at: object
     sender: UserSummary
     recipient: UserSummary | None = None
+    media: list["MediaAttachmentRead"] = Field(default_factory=list)
+
+
+class MediaAttachmentRead(BaseModel):
+    id: str
+    upload_id: str
+    type: str
+    url: str
+    cdn_url: str
+    cloudinary_url: str | None = None
+    thumbnail_url: str | None = None
+    width: int | None = None
+    height: int | None = None
+    duration: float | None = None
+    mime_type: str
+    size: int
+    status: str
+
+
+class MediaUploadRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(min_length=3, max_length=120)
+    file_size_bytes: int = Field(alias="size", gt=0)
+    media_type: str | None = Field(default=None, alias="type", pattern="^(image|video)$")
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    duration_seconds: float | None = Field(default=None, alias="duration", gt=0)
+    checksum_sha256: str | None = Field(default=None, min_length=43, max_length=128)
+
+
+class MediaUploadResponse(MediaAttachmentRead):
+    upload_url: str
+    upload_method: str
+    upload_headers: dict[str, str]
+    expires_at: object
+
+
+class MediaUploadCompleteRequest(BaseModel):
+    checksum_sha256: str | None = Field(default=None, min_length=43, max_length=128)
+    width: int | None = Field(default=None, gt=0)
+    height: int | None = Field(default=None, gt=0)
+    duration_seconds: float | None = Field(default=None, alias="duration", gt=0)
+
+
+class MediaUploadProgressRead(BaseModel):
+    upload_id: str
+    status: str
+    progress: int
+    validation_error: str | None = None
+
+
+class MessageStatusUpdateRequest(BaseModel):
+    status: MessageStatus
+
+
+class RealtimeAckRequest(BaseModel):
+    message_id: int = Field(gt=0)
+    status: str = Field(default="delivered", pattern="^(delivered|read|acknowledged)$")
+    client_event_id: str | None = Field(default=None, max_length=128)
+
+
+class MessageEditRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class MessagePageRead(BaseModel):
+    messages: list[ChatMessageRead]
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class GroupChatMessageRead(BaseModel):
@@ -107,6 +191,30 @@ class ConversationRead(BaseModel):
     last_message: str | None = None
     last_message_at: object | None = None
     unread_count: int = 0
+
+
+def _media_to_read(asset) -> MediaAttachmentRead:
+    return MediaAttachmentRead(
+        id=asset.upload_id,
+        upload_id=asset.upload_id,
+        type=asset.media_type,
+        url=asset.cloudinary_url or asset.cdn_url,
+        cdn_url=asset.cdn_url,
+        cloudinary_url=asset.cloudinary_url,
+        thumbnail_url=asset.cloudinary_url if asset.media_type == "image" else None,
+        width=asset.width,
+        height=asset.height,
+        duration=asset.duration_seconds,
+        mime_type=asset.mime_type,
+        size=asset.file_size_bytes,
+        status=asset.status,
+    )
+
+
+def _message_to_read(message: Message) -> ChatMessageRead:
+    payload = ChatMessageRead.model_validate(message)
+    payload.media = [_media_to_read(asset) for asset in getattr(message, "media_assets", [])]
+    return payload
 
 
 def _validate_conversation_access(conversation, current_user_id: int) -> None:
@@ -167,13 +275,81 @@ def list_conversations(
     return items
 
 
-@router.get("/{conversation_id}", response_model=list[ChatMessageRead])
+@router.post("/media/upload", response_model=MediaUploadResponse, status_code=status.HTTP_201_CREATED)
+def create_chat_media_upload(
+    payload: MediaUploadRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_media_upload", 30, 60)),
+) -> MediaUploadResponse:
+    try:
+        asset, upload = create_presigned_media_upload(
+            db,
+            user_id=current_user.id,
+            filename=payload.filename,
+            mime_type=payload.mime_type,
+            file_size_bytes=payload.file_size_bytes,
+            requested_media_type=payload.media_type,
+            width=payload.width,
+            height=payload.height,
+            duration_seconds=payload.duration_seconds,
+            checksum_sha256=payload.checksum_sha256,
+        )
+    except MediaValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except MediaConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    base = _media_to_read(asset).model_dump(mode="json")
+    return MediaUploadResponse(**base, **upload)
+
+
+@router.post("/media/upload/{upload_id}/complete", response_model=MediaAttachmentRead)
+def complete_chat_media_upload(
+    upload_id: str,
+    payload: MediaUploadCompleteRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_media_upload", 60, 60)),
+) -> MediaAttachmentRead:
+    try:
+        asset = complete_media_upload(
+            db,
+            user_id=current_user.id,
+            upload_id=upload_id,
+            checksum_sha256=payload.checksum_sha256,
+            width=payload.width,
+            height=payload.height,
+            duration_seconds=payload.duration_seconds,
+        )
+    except MediaValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _media_to_read(asset)
+
+
+@router.get("/media/upload/{upload_id}/progress", response_model=MediaUploadProgressRead)
+def get_chat_media_upload_progress(
+    upload_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_media_upload", 120, 60)),
+) -> MediaUploadProgressRead:
+    try:
+        return MediaUploadProgressRead.model_validate(
+            get_media_upload_progress(db, user_id=current_user.id, upload_id=upload_id)
+        )
+    except MediaValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+@router.get("/{conversation_id}", response_model=MessagePageRead)
 def get_conversation(
     conversation_id: str,
+    cursor: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=30, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     _: None = Depends(rate_limit("chat_read", 120, 60)),
-) -> list[ChatMessageRead]:
+) -> MessagePageRead:
     conversation = get_conversation_service(db=db, conversation_id=conversation_id)
     if conversation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
@@ -182,8 +358,40 @@ def get_conversation(
     read_receipt = mark_conversation_read(db=db, conversation=conversation, user_id=current_user.id)
     if read_receipt is not None:
         _broadcast_read_receipt(conversation, read_receipt)
-    messages = list_messages_service(db=db, conversation_id=conversation_id)
-    return [ChatMessageRead.model_validate(message) for message in messages]
+    base_query = (
+        select(Message)
+        .options(
+            selectinload(Message.sender).selectinload(User.profile),
+            selectinload(Message.recipient).selectinload(User.profile),
+            selectinload(Message.media_assets),
+            selectinload(Message.deliveries),
+        )
+        .where(Message.conversation_id == conversation_id)
+    )
+    reverse = False
+    if cursor:
+        direction, _, raw_id = cursor.partition(":")
+        try:
+            message_id = int(raw_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor") from exc
+        if direction == "before":
+            base_query = base_query.where(Message.id < message_id).order_by(Message.id.desc())
+            reverse = True
+        elif direction == "after":
+            base_query = base_query.where(Message.id > message_id).order_by(Message.id.asc())
+        else:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid cursor")
+    else:
+        base_query = base_query.order_by(Message.id.desc())
+        reverse = True
+    rows = db.scalars(base_query.limit(limit + 1)).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    if reverse:
+        rows = list(reversed(rows))
+    next_cursor = f"before:{rows[0].id}" if has_more and rows else None
+    return MessagePageRead(messages=[_message_to_read(message) for message in rows], next_cursor=next_cursor, has_more=has_more)
 
 
 @router.post("/send", response_model=ChatMessageRead, status_code=status.HTTP_201_CREATED)
@@ -201,22 +409,28 @@ def send_message(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Recipient not found")
 
     conversation = get_or_create_direct_conversation(db, current_user, recipient)
-    message = create_message(db, conversation, current_user, recipient, payload.content)
+    try:
+        message = create_message(
+            db,
+            conversation,
+            current_user,
+            recipient,
+            payload.content,
+            media_upload_ids=payload.media,
+            client_message_id=payload.local_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     message = db.scalar(
         select(Message)
         .options(
             selectinload(Message.sender).selectinload(User.profile),
             selectinload(Message.recipient).selectinload(User.profile),
+            selectinload(Message.media_assets),
         )
         .where(Message.id == message.id)
     )
-    message_payload = ChatMessageRead.model_validate(message).model_dump(mode="json")
-    from_thread.run(
-        chat_connection_manager.broadcast_to_users,
-        {current_user.id, payload.recipient_user_id},
-        {"type": "chat.message.created", "data": message_payload},
-    )
-    return ChatMessageRead.model_validate(message)
+    return _message_to_read(message)
 
 
 @router.post("/group/send", response_model=GroupChatMessageRead, status_code=status.HTTP_201_CREATED)
@@ -266,7 +480,15 @@ def send_group_message_endpoint(
         user_ids=offline_user_ids,
         title="New trip message",
         body=payload.content[:120],
-        data={"type": "chat.message", "trip_id": payload.trip_id, "conversation_id": response.conversation_id, "message_id": response.id},
+        data={
+            "type": "chat.message",
+            "trip_id": payload.trip_id,
+            "conversation_id": response.conversation_id,
+            "message_id": response.id,
+            "entity_id": response.id,
+            "entity_type": "message",
+            "deep_link": f"aventaro://chat/conversation?conversationId={response.conversation_id}",
+        },
     )
     return response
 
@@ -294,6 +516,89 @@ def mark_chat_read_endpoint(
         return ChatReadReceiptRead.model_validate(receipt)
     _broadcast_read_receipt(conversation, receipt)
     return ChatReadReceiptRead.model_validate(receipt)
+
+
+def _load_message_for_user(db: Session, conversation_id: str, message_id: int, current_user_id: int) -> Message:
+    conversation = get_conversation_service(db=db, conversation_id=conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    _validate_conversation_access(conversation, current_user_id)
+    message = db.scalar(
+        select(Message)
+        .options(
+            selectinload(Message.sender).selectinload(User.profile),
+            selectinload(Message.recipient).selectinload(User.profile),
+            selectinload(Message.media_assets),
+        )
+        .where(Message.id == message_id, Message.conversation_id == conversation_id)
+    )
+    if message is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found")
+    return message
+
+
+@router.get("/{conversation_id}/message/{message_id}", response_model=ChatMessageRead)
+def get_chat_message(
+    conversation_id: str,
+    message_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_read", 120, 60)),
+) -> ChatMessageRead:
+    return _message_to_read(_load_message_for_user(db, conversation_id, message_id, current_user.id))
+
+
+@router.post("/{conversation_id}/message/{message_id}/status", response_model=ChatMessageRead)
+def update_chat_message_status(
+    conversation_id: str,
+    message_id: int,
+    payload: MessageStatusUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_read", 120, 60)),
+) -> ChatMessageRead:
+    message = _load_message_for_user(db, conversation_id, message_id, current_user.id)
+    if message.sender_id == current_user.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sender cannot acknowledge own message")
+    acknowledge_message_delivery(db, user_id=current_user.id, message_id=message.id, status=payload.status.value)
+    db.refresh(message)
+    return _message_to_read(_load_message_for_user(db, conversation_id, message_id, current_user.id))
+
+
+@router.put("/{conversation_id}/message/{message_id}", response_model=ChatMessageRead)
+def edit_chat_message(
+    conversation_id: str,
+    message_id: int,
+    payload: MessageEditRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_send", 45, 60)),
+) -> ChatMessageRead:
+    message = _load_message_for_user(db, conversation_id, message_id, current_user.id)
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the sender can edit this message")
+    if message.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Deleted messages cannot be edited")
+    message.content = payload.content.strip()
+    message.edited_at = datetime.now(timezone.utc)
+    db.commit()
+    return _message_to_read(_load_message_for_user(db, conversation_id, message_id, current_user.id))
+
+
+@router.delete("/{conversation_id}/message/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_chat_message(
+    conversation_id: str,
+    message_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    _: None = Depends(rate_limit("chat_send", 45, 60)),
+) -> None:
+    message = _load_message_for_user(db, conversation_id, message_id, current_user.id)
+    if message.sender_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the sender can delete this message")
+    message.content = "[deleted]"
+    message.deleted_at = datetime.now(timezone.utc)
+    db.commit()
 
 
 @router.websocket("/ws")
@@ -333,6 +638,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
     replay_payloads: list[dict[str, object]] = []
     delivered_count = 0
     with SessionLocal() as db:
+        try:
+            assert_access_session_valid(db, payload)
+        except HTTPException as exc:
+            logger.warning("chat websocket rejected: revoked or expired session", extra={"user_id": user_id}, exc_info=exc)
+            await websocket.close(code=4401)
+            return
         user = db.scalar(select(User).where(User.id == user_id))
         if user is None:
             logger.warning("chat websocket rejected: user not found", extra={"user_id": user_id})
@@ -341,7 +652,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
         delivered_count = mark_messages_delivered_for_user(db=db, user_id=user_id)
         if after_message_id is not None:
             replay_messages = list_user_messages_since(db=db, user_id=user_id, after_message_id=after_message_id)
-            replay_payloads = [ChatMessageRead.model_validate(message).model_dump(mode="json") for message in replay_messages]
+            replay_payloads = [_message_to_read(message).model_dump(mode="json") for message in replay_messages]
 
     connected = False
     try:
@@ -352,8 +663,10 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 "type": "chat.connected",
                 "data": {
                     "user_id": user_id,
+                    "protocol_version": 1,
                     "replayed_count": len(replay_payloads),
                     "delivered_count": delivered_count,
+                    "server_time": datetime.now(timezone.utc).isoformat(),
                 },
             }
         )
@@ -374,6 +687,52 @@ async def chat_websocket(websocket: WebSocket) -> None:
             room = command.get("room")
             if action == "ping":
                 await websocket.send_json({"type": "chat.pong"})
+                continue
+            if action == "ack":
+                try:
+                    ack = RealtimeAckRequest.model_validate(command.get("data") or command)
+                except Exception:
+                    await websocket.send_json({"type": "chat.ack.error", "data": {"message": "Invalid ACK payload"}})
+                    continue
+                with SessionLocal() as db:
+                    receipt = acknowledge_message_delivery(
+                        db,
+                        user_id=user_id,
+                        message_id=ack.message_id,
+                        status=ack.status,
+                    )
+                await websocket.send_json(
+                    {
+                        "type": "chat.ack",
+                        "data": {
+                            "client_event_id": ack.client_event_id,
+                            "message_id": ack.message_id,
+                            "status": receipt["status"] if receipt else "ignored",
+                        },
+                    }
+                )
+                continue
+            if action == "state_sync":
+                try:
+                    requested_after = int(command.get("after_message_id") or command.get("last_message_id") or 0)
+                    if requested_after < 0:
+                        raise ValueError
+                except (TypeError, ValueError):
+                    await websocket.send_json({"type": "chat.state.error", "data": {"message": "Invalid state cursor"}})
+                    continue
+                with SessionLocal() as db:
+                    replay_messages = list_user_messages_since(db=db, user_id=user_id, after_message_id=requested_after)
+                    replay_payloads = [_message_to_read(message).model_dump(mode="json") for message in replay_messages]
+                await websocket.send_json(
+                    {
+                        "type": "chat.state",
+                        "data": {
+                            "after_message_id": requested_after,
+                            "messages": replay_payloads,
+                            "server_time": datetime.now(timezone.utc).isoformat(),
+                        },
+                    }
+                )
                 continue
             if action not in {"join", "leave"} or not isinstance(room, str):
                 await websocket.send_json({"type": "chat.error", "data": {"message": "Invalid websocket command"}})

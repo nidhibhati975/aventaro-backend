@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
@@ -11,6 +13,7 @@ from app.services.auth import get_current_user
 from app.services.redis_runtime import get_cache, invalidate_match_suggestions_cache
 from app.services.match import (
     create_match_request as create_match_request_service,
+    explain_match_score,
     list_matches as list_matches_service,
     list_received_matches as list_received_matches_service,
     list_suggestion_candidates,
@@ -43,6 +46,9 @@ class SuggestedUserRead(BaseModel):
     id: int
     email: str
     profile: ProfileRead | None = None
+    compatibility_score: float | None = None
+    compatibility_reasons: list[str] | None = None
+    compatibility_breakdown: dict[str, Any] | None = None
 
 
 class MatchSuggestionRequest(BaseModel):
@@ -60,6 +66,8 @@ class MatchRead(BaseModel):
     user: SuggestedUserRead
     compatibility_score: int | None = None
     compatibility_reason: str | None = None
+    score: float | None = None
+    reasons: list[str] | None = None
 
 
 def _build_match_read(match, current_user_id: int) -> MatchRead:
@@ -76,24 +84,39 @@ def _build_match_read(match, current_user_id: int) -> MatchRead:
         user=SuggestedUserRead.model_validate(other_user),
         compatibility_score=match.compatibility_score,
         compatibility_reason=match.compatibility_reason,
+        score=round((match.compatibility_score or 0) / 100, 2) if match.compatibility_score is not None else None,
+        reasons=[match.compatibility_reason] if match.compatibility_reason else None,
     )
 
 
-@router.post("/match", response_model=list[SuggestedUserRead])
+@router.post("/match")
 def get_suggestions(
     payload: MatchSuggestionRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> list[SuggestedUserRead]:
+) -> dict:
     cache_key = f"match:suggestions:user:{current_user.id}:limit:{payload.limit}"
     cached = get_cache().get_json(cache_key)
     if cached is not None:
-        return cached
+        return {
+            "data": cached,
+            "meta": {"limit": payload.limit, "count": len(cached)},
+        }
 
     users = list_suggestion_candidates(db=db, current_user_id=current_user.id, limit=payload.limit)
-    response_payload = [SuggestedUserRead.model_validate(user).model_dump(mode="json") for user in users]
+    response_payload = []
+    for user in users:
+        explained = explain_match_score(current_user, user, db=db)
+        item = SuggestedUserRead.model_validate(user).model_dump(mode="json")
+        item["compatibility_score"] = explained.score
+        item["compatibility_reasons"] = explained.reasons
+        item["compatibility_breakdown"] = explained.breakdown
+        response_payload.append(item)
     get_cache().set_json(cache_key, response_payload, ttl_seconds=30)
-    return response_payload
+    return {
+        "data": response_payload,
+        "meta": {"limit": payload.limit, "count": len(response_payload)},
+    }
 
 
 @router.post("/matches", response_model=MatchRead, status_code=status.HTTP_201_CREATED)
@@ -218,3 +241,46 @@ def reject_match(
     current_user: User = Depends(get_current_user),
 ) -> MatchRead:
     return reject_match_request(match_id=match_id, db=db, current_user=current_user)
+
+
+class ExplainedMatchScoreRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: int
+    score: float
+    reasons: list[str]
+    breakdown: dict[str, Any]
+
+
+class ExplainedSuggestionRead(BaseModel):
+    user: SuggestedUserRead
+    score: float
+    reasons: list[str]
+    breakdown: dict[str, Any]
+
+
+@router.get("/match/suggestions/explained", response_model=list[ExplainedSuggestionRead])
+def get_explained_suggestions(
+    limit: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[ExplainedSuggestionRead]:
+    """Get match suggestions with detailed score explanations."""
+    from app.services.match import explain_match_score, list_suggestion_candidates
+    
+    # Get candidates
+    candidates = list_suggestion_candidates(db=db, current_user_id=current_user.id, limit=limit)
+    
+    results: list[ExplainedSuggestionRead] = []
+    for candidate in candidates:
+        explained = explain_match_score(current_user, candidate, db=db)
+        results.append(
+            ExplainedSuggestionRead(
+                user=SuggestedUserRead.model_validate(candidate),
+                score=explained.score,
+                reasons=explained.reasons,
+                breakdown=explained.breakdown,
+            )
+        )
+    
+    return results

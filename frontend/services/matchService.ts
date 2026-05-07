@@ -1,10 +1,17 @@
 import api, { getApiData } from './api';
-import { invalidateCacheByPrefixes } from './cache';
-import type { MatchRecord } from './types';
+import { getCachedOrFetch, invalidateCacheByPrefixes } from './cache';
+import type { MatchRecord, MatchSuggestionRecord } from './types';
 
 export async function fetchMatches(): Promise<MatchRecord[]> {
   const [received, sent] = await Promise.all([fetchReceivedMatches(), fetchSentMatches()]);
   return [...received, ...sent];
+}
+
+export async function fetchMatchSuggestions(limit: number = 10): Promise<MatchSuggestionRecord[]> {
+  return getCachedOrFetch(`match:suggestions:${limit}`, 30 * 1000, async () => {
+    const response = await api.get('/match/suggestions/explained', { params: { limit } });
+    return getApiData<MatchSuggestionRecord[]>(response) || [];
+  });
 }
 
 export async function fetchReceivedMatches(): Promise<MatchRecord[]> {

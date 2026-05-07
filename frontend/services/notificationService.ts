@@ -31,12 +31,16 @@ export async function fetchNotifications(): Promise<NotificationRecord[]> {
     const response = await api.get('/notifications');
     return (getApiData<any[]>(response) || []).map((item: any) => ({
       id: Number(item.id),
-      title: buildNotificationTitle(item.type),
+      title: String(item.title || buildNotificationTitle(item.type)),
       body: String(item.message || ''),
       created_at: String(item.createdAt || item.created_at || ''),
       is_read: Boolean(item.isRead ?? item.is_read),
       type: item.type,
       entity_id: item.entityId ?? item.entity_id ?? null,
+      entity_type: item.entityType ?? item.entity_type ?? null,
+      deep_link: item.deepLink ?? item.deep_link ?? null,
+      status: item.status ?? null,
+      priority: item.priority ?? null,
     }));
   });
 }

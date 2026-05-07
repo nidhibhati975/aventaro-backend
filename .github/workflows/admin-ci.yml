@@ -1,0 +1,30 @@
+name: Admin CI
+
+on:
+  pull_request:
+    paths:
+      - "admin/**"
+  push:
+    branches: [main]
+    paths:
+      - "admin/**"
+
+jobs:
+  admin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_API_BASE_URL: https://api.staging.aventaro.com
+      - name: Build admin image
+        run: docker build --build-arg VITE_API_BASE_URL=https://api.staging.aventaro.com -t aventaro-admin:ci .

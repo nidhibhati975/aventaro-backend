@@ -1,18 +1,30 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
+from dotenv import load_dotenv
 
 from app import models  # noqa: F401
 from app.db.base import Base
-from app.utils.config import get_settings
+from app.utils.config import normalize_database_url
 
 
 config = context.config
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+
+def _get_alembic_database_url() -> str:
+    configured_url = os.getenv("DATABASE_URL") or config.get_main_option("sqlalchemy.url")
+    if configured_url is None or not configured_url.strip():
+        raise RuntimeError("DATABASE_URL must be set for Alembic migrations")
+    return normalize_database_url(configured_url)
+
+
+config.set_main_option("sqlalchemy.url", _get_alembic_database_url())
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

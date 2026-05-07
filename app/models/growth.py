@@ -64,13 +64,17 @@ class Referral(Base):
 class AnalyticsEvent(Base):
     __tablename__ = "app_analytics_events"
     __table_args__ = (
+        UniqueConstraint("event_id", name="uq_app_analytics_events_event_id"),
         Index("ix_app_analytics_events_user_type_created_at", "user_id", "event_type", "created_at"),
         Index("ix_app_analytics_events_type_created_at", "event_type", "created_at"),
+        Index("ix_app_analytics_events_schema_version", "schema_version"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(16), nullable=False, default="1.0")
     event_metadata: Mapped[dict | None] = mapped_column("metadata", JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

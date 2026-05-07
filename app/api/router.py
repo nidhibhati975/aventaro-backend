@@ -1,15 +1,21 @@
 from fastapi import APIRouter
 
+from app.api.admin import router as admin_router
+from app.api.affiliate import router as affiliate_router
 from app.api.ai import router as ai_router
+from app.api.analytics import router as analytics_router
 from app.api.auth import router as auth_router
 from app.api.boost import router as boost_router
+from app.api.booking import router as booking_router
 from app.api.chat import router as chat_router
 from app.api.collections import router as collections_router
 from app.api.discover import router as discover_router
+from app.api.engagement import router as engagement_router
 from app.api.expenses import router as expenses_router
 from app.api.hashtags import router as hashtags_router
 from app.api.match import router as match_router
 from app.api.moderation import router as moderation_router
+from app.api.monetization import router as monetization_router
 from app.api.notifications import router as notifications_router
 from app.api.payments import router as payments_router
 from app.api.posts import router as posts_router
@@ -20,6 +26,7 @@ from app.api.subscription import router as subscription_router
 from app.api.support import router as support_router
 from app.api.trip import router as trip_router
 from app.api.users import router as users_router
+from app.api.verification import router as verification_router
 
 
 api_router = APIRouter()
@@ -30,6 +37,7 @@ api_router.include_router(profile_router, tags=["profile"])
 api_router.include_router(boost_router, tags=["boost"])
 api_router.include_router(ai_router, tags=["ai"])
 api_router.include_router(discover_router, tags=["discover"])
+api_router.include_router(engagement_router, tags=["engagement"])
 api_router.include_router(expenses_router, tags=["expenses"])
 api_router.include_router(match_router, tags=["matches"])
 api_router.include_router(trip_router, tags=["trip"])
@@ -40,6 +48,12 @@ api_router.include_router(stories_router, tags=["stories"])
 api_router.include_router(hashtags_router, tags=["hashtags"])
 api_router.include_router(collections_router, tags=["collections"])
 api_router.include_router(moderation_router, tags=["moderation"])
+api_router.include_router(monetization_router, tags=["monetization"])
 api_router.include_router(notifications_router, tags=["notifications"])
 api_router.include_router(payments_router, tags=["payments"])
 api_router.include_router(support_router, tags=["support"])
+api_router.include_router(booking_router, tags=["booking"])
+api_router.include_router(analytics_router, tags=["analytics"])
+api_router.include_router(verification_router, tags=["verification"])
+api_router.include_router(admin_router, tags=["admin"])
+api_router.include_router(affiliate_router, tags=["affiliate"])

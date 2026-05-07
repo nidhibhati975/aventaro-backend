@@ -12,6 +12,8 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 
 import { useRealtime } from '../contexts/RealtimeContext';
+import { APP_PATHS, navigateToPath } from '../navigation/router';
+import { handleIncomingUrl } from '../services/deepLinks';
 import { extractErrorMessage } from '../services/api';
 import { fetchNotifications, markNotificationRead, markNotificationsRead } from '../services/notificationService';
 import type { NotificationRecord } from '../services/types';
@@ -157,6 +159,43 @@ export default function NotificationsScreen() {
       }
     }
 
+    if (item.deep_link) {
+      const handled = await handleIncomingUrl(item.deep_link);
+      if (handled) {
+        return;
+      }
+    }
+
+    if (item.entity_type === 'conversation' && item.entity_id) {
+      navigation.navigate('Conversation', { conversationId: String(item.entity_id) });
+      return;
+    }
+
+    if (item.entity_type === 'trip' && item.entity_id) {
+      navigation.navigate('TripDetails', { tripId: Number(item.entity_id) });
+      return;
+    }
+
+    if (item.entity_type === 'user' && item.entity_id) {
+      navigation.navigate('PublicProfile', { userId: Number(item.entity_id) });
+      return;
+    }
+
+    if (item.entity_type === 'booking') {
+      navigation.navigate('Bookings', item.entity_id ? { bookingId: Number(item.entity_id) } : undefined);
+      return;
+    }
+
+    if (item.entity_type === 'verification') {
+      navigation.navigate('PrivacySecurity');
+      return;
+    }
+
+    if (item.entity_type === 'match') {
+      navigateToPath(APP_PATHS.TAB_CONNECT);
+      return;
+    }
+
     if ((item.type === 'chat' || item.type === 'chat_message') && item.entity_id) {
       navigation.navigate('Conversation', { conversationId: String(item.entity_id) });
       return;
@@ -172,14 +211,22 @@ export default function NotificationsScreen() {
       return;
     }
 
-    if (
-      (item.type === 'match' ||
-        item.type === 'match_request' ||
-        item.type === 'match_accept' ||
-        item.type === 'profile' ||
-        item.type === 'new_follower') &&
-      item.entity_id
-    ) {
+    if (item.type === 'booking') {
+      navigation.navigate('Bookings', item.entity_id ? { bookingId: Number(item.entity_id) } : undefined);
+      return;
+    }
+
+    if (item.type === 'verification') {
+      navigation.navigate('PrivacySecurity');
+      return;
+    }
+
+    if (item.type === 'match' || item.type === 'match_request' || item.type === 'match_accept') {
+      navigateToPath(APP_PATHS.TAB_CONNECT);
+      return;
+    }
+
+    if ((item.type === 'profile' || item.type === 'new_follower') && item.entity_id) {
       navigation.navigate('PublicProfile', { userId: Number(item.entity_id) });
     }
   };
@@ -239,7 +286,7 @@ export default function NotificationsScreen() {
                   <Ionicons name={visual.icon} size={20} color={visual.iconColor} />
                 </View>
                 <View style={styles.textWrap}>
-                  <Text style={styles.notificationTitle}>{visual.title}</Text>
+                  <Text style={styles.notificationTitle}>{item.title || visual.title}</Text>
                   <Text style={styles.notificationBody}>{item.body}</Text>
                   <Text style={styles.notificationTime}>{formatRelativeTime(item.created_at)}</Text>
                 </View>
