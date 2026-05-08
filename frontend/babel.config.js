@@ -10,6 +10,7 @@ module.exports = {
       {
         moduleName: '@env',
         path: rootEnvPath,
+        allowlist: ['APP_ENV', 'API_BASE_URL', 'BACKEND_URL', 'FRONTEND_SENTRY_DSN'],
         allowUndefined: true,
       },
     ],

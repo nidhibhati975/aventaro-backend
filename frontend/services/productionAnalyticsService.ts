@@ -101,6 +101,16 @@ class ProductionAnalyticsService {
   // ============== INITIALIZATION ==============
 
   async init(userId: number): Promise<void> {
+    if (this.isInitialized && this.userId === userId) {
+      return;
+    }
+
+    if (this.appStateSubscription) {
+      this.appStateSubscription.remove();
+      this.appStateSubscription = null;
+    }
+    this.stopFlushTimer();
+
     this.userId = userId;
     this.isInitialized = true;
 
@@ -272,7 +282,9 @@ class ProductionAnalyticsService {
 
   track(eventType: string, properties?: Record<string, any>): void {
     if (!this.isInitialized) {
-      console.warn('[Analytics] Not initialized, skipping event');
+      if (__DEV__) {
+        console.log('[Analytics] Not initialized, skipping event');
+      }
       return;
     }
 

@@ -21,6 +21,7 @@ import {
 import { clearCachedValues } from '../services/cache';
 import { errorLogger } from '../services/errorLogger';
 import firebasePushService from '../services/firebasePushService';
+import { productionAnalytics } from '../services/productionAnalyticsService';
 import type { AppUser } from '../services/types';
 
 type User = AppUser;
@@ -165,6 +166,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await writeCachedUser(session.user);
       setToken(session.accessToken);
       setUser(session.user);
+      if (Number.isFinite(session.user.id)) {
+        try {
+          await productionAnalytics.init(session.user.id);
+        } catch (analyticsError) {
+          errorLogger.logError(analyticsError, { source: 'Auth', context: { action: 'initializeAnalytics' } });
+        }
+      }
     } catch (error) {
       errorLogger.logError(error, { source: 'Auth', context: { action: 'applySession' } });
       await clearLocalAuthState();
@@ -219,6 +227,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const cachedUser = await readCachedUser();
       if (cachedUser) {
         setUser(cachedUser);
+        if (Number.isFinite(cachedUser.id)) {
+          void productionAnalytics.init(cachedUser.id).catch((analyticsError) => {
+            errorLogger.logError(analyticsError, { source: 'Auth', context: { action: 'initializeAnalyticsCachedUser' } });
+          });
+        }
       }
 
       try {
@@ -226,6 +239,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (currentUser) {
           await writeCachedUser(currentUser);
           setUser(currentUser);
+          if (Number.isFinite(currentUser.id)) {
+            void productionAnalytics.init(currentUser.id).catch((analyticsError) => {
+              errorLogger.logError(analyticsError, { source: 'Auth', context: { action: 'initializeAnalyticsCurrentUser' } });
+            });
+          }
         }
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {

@@ -28,7 +28,6 @@ def check_external_configuration_health() -> None:
         import boto3  # noqa: F401
         import stripe  # noqa: F401
         import sentry_sdk  # noqa: F401
-        import opentelemetry  # noqa: F401
     except ImportError as exc:
         raise RuntimeError("Required integration dependency is not installed") from exc
 

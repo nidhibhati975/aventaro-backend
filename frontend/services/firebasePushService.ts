@@ -1,5 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import messaging, { FirebaseMessagingTypes } from '@react-native-firebase/messaging';
+import {
+  AuthorizationStatus,
+  deleteToken,
+  getInitialNotification,
+  getMessaging,
+  getToken,
+  hasPermission,
+  isDeviceRegisteredForRemoteMessages,
+  onMessage,
+  onNotificationOpenedApp,
+  onTokenRefresh,
+  registerDeviceForRemoteMessages,
+  requestPermission,
+  setBackgroundMessageHandler,
+  type FirebaseMessagingTypes,
+} from '@react-native-firebase/messaging';
 import { AppState, PermissionsAndroid, Platform } from 'react-native';
 
 import api from './api';
@@ -76,6 +91,7 @@ const NOTIFICATION_PERMISSION_KEY = 'push:permissionStatus';
 const PENDING_NOTIFICATION_OPEN_KEY = 'push:pendingNotificationOpen';
 
 let backgroundHandlerRegistered = false;
+const firebaseMessaging = getMessaging();
 
 function isPermissionEnabled(status: PermissionStatus) {
   return status === 'granted' || status === 'provisional';
@@ -96,13 +112,13 @@ function getStringValue(value: unknown): string | undefined {
 }
 
 function mapIosPermissionStatus(status: number): PermissionStatus {
-  if (status === messaging.AuthorizationStatus.AUTHORIZED) {
+  if (status === AuthorizationStatus.AUTHORIZED) {
     return 'granted';
   }
-  if (status === messaging.AuthorizationStatus.PROVISIONAL) {
+  if (status === AuthorizationStatus.PROVISIONAL) {
     return 'provisional';
   }
-  if (status === messaging.AuthorizationStatus.DENIED) {
+  if (status === AuthorizationStatus.DENIED) {
     return 'denied';
   }
   return 'undetermined';
@@ -141,9 +157,7 @@ class FirebasePushService {
 
       if (Platform.OS === 'ios') {
         await this.ensureRemoteMessagesRegistered();
-        const authorizationStatus = await messaging().requestPermission({
-          provisional: true,
-        });
+        const authorizationStatus = await requestPermission(firebaseMessaging, { provisional: true });
         nextStatus = mapIosPermissionStatus(authorizationStatus);
       } else if (getAndroidApiLevel() >= 33) {
         const alreadyGranted = await PermissionsAndroid.check(
@@ -181,14 +195,8 @@ class FirebasePushService {
   async checkPermissionStatus(): Promise<PermissionStatus> {
     try {
       if (Platform.OS === 'ios') {
-        const messagingModule = messaging() as FirebaseMessagingTypes.Module & {
-          hasPermission?: () => Promise<number>;
-        };
-
-        if (typeof messagingModule.hasPermission === 'function') {
-          const status = await messagingModule.hasPermission();
-          this.permissionStatus = mapIosPermissionStatus(status);
-        }
+        const status = await hasPermission(firebaseMessaging);
+        this.permissionStatus = mapIosPermissionStatus(status);
       } else if (getAndroidApiLevel() >= 33) {
         const granted = await PermissionsAndroid.check(
           PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
@@ -223,7 +231,7 @@ class FirebasePushService {
   async getToken(): Promise<string | null> {
     try {
       await this.ensureRemoteMessagesRegistered();
-      const token = await messaging().getToken();
+      const token = await getToken(firebaseMessaging);
       if (!token) {
         return null;
       }
@@ -407,7 +415,7 @@ class FirebasePushService {
     }
 
     try {
-      await messaging().deleteToken();
+      await deleteToken(firebaseMessaging);
     } catch (error) {
       errorLogger.logError(error, {
         source: 'PushToken',
@@ -451,24 +459,24 @@ class FirebasePushService {
   }
 
   private setupMessagingListeners() {
-    this.foregroundUnsubscribe = messaging().onMessage(async (remoteMessage) => {
+    this.foregroundUnsubscribe = onMessage(firebaseMessaging, async (remoteMessage) => {
       this.handleForegroundNotification(remoteMessage);
     });
 
-    this.openedAppUnsubscribe = messaging().onNotificationOpenedApp(
+    this.openedAppUnsubscribe = onNotificationOpenedApp(
+      firebaseMessaging,
       async (remoteMessage) => {
         await this.handleNotificationTap(remoteMessage);
       },
     );
 
-    this.tokenRefreshUnsubscribe = messaging().onTokenRefresh(async (token) => {
+    this.tokenRefreshUnsubscribe = onTokenRefresh(firebaseMessaging, async (token) => {
       this.deviceToken = token;
       await this.persistDeviceToken(token);
       await this.registerTokenToBackend(token);
     });
 
-    void messaging()
-      .getInitialNotification()
+    void getInitialNotification(firebaseMessaging)
       .then(async (remoteMessage) => {
         if (remoteMessage) {
           await this.handleNotificationTap(remoteMessage);
@@ -488,8 +496,8 @@ class FirebasePushService {
     }
 
     try {
-      if (!messaging().isDeviceRegisteredForRemoteMessages) {
-        await messaging().registerDeviceForRemoteMessages();
+      if (!isDeviceRegisteredForRemoteMessages(firebaseMessaging)) {
+        await registerDeviceForRemoteMessages(firebaseMessaging);
       }
     } catch (error) {
       errorLogger.logError(error, {
@@ -735,7 +743,7 @@ export function registerFirebaseBackgroundHandler(): void {
     return;
   }
 
-  messaging().setBackgroundMessageHandler(async (remoteMessage) => {
+  setBackgroundMessageHandler(firebaseMessaging, async (remoteMessage) => {
     await firebasePushService.handleBackgroundRemoteMessage(remoteMessage);
   });
 

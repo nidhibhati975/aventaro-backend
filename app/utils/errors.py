@@ -6,6 +6,9 @@ from http import HTTPStatus
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.services.observability import capture_backend_exception
 
 
 logger = logging.getLogger(__name__)
@@ -87,8 +90,29 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
         return _build_error_response(request, status.HTTP_422_UNPROCESSABLE_ENTITY, _summarize_validation_error(exc))
 
+    @app.exception_handler(SQLAlchemyError)
+    async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+        capture_backend_exception(exc)
+        logger.exception(
+            "Database exception",
+            exc_info=exc,
+            extra={
+                "request_id": getattr(request.state, "request_id", None),
+                "user_id": getattr(request.state, "user_id", None),
+                "endpoint": request.url.path,
+                "method": request.method,
+            },
+        )
+        return _build_error_response(
+            request,
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "Database request failed",
+            extras={"code": "database_error"},
+        )
+
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        capture_backend_exception(exc)
         logger.exception(
             "Unhandled server exception",
             exc_info=exc,

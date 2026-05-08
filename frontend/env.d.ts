@@ -2,7 +2,7 @@ declare module '@env' {
   export const APP_ENV: string | undefined;
   export const API_BASE_URL: string | undefined;
   export const BACKEND_URL: string | undefined;
-  export const SENTRY_DSN: string | undefined;
+  export const FRONTEND_SENTRY_DSN: string | undefined;
 }
 
 declare module 'react-native-vector-icons/Ionicons' {

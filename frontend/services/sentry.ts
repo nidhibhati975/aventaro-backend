@@ -1,9 +1,15 @@
 import * as Sentry from '@sentry/react-native';
-import { SENTRY_DSN } from '@env';
+import { FRONTEND_SENTRY_DSN } from '@env';
 
 const PLACEHOLDER_VALUES = new Set(['REPLACE', 'REPLACE_ME', 'CHANGE_ME', 'PLACEHOLDER']);
-const normalizedDsn = SENTRY_DSN?.trim();
-const hasValidDsn = Boolean(normalizedDsn && !PLACEHOLDER_VALUES.has(normalizedDsn.toUpperCase()));
+
+const normalizedDsn = FRONTEND_SENTRY_DSN?.trim();
+
+const hasValidDsn = Boolean(
+  normalizedDsn &&
+  !PLACEHOLDER_VALUES.has(normalizedDsn.toUpperCase())
+);
+
 const shouldEnableSentry = !__DEV__ && hasValidDsn;
 
 let initialized = false;
@@ -29,6 +35,7 @@ export function captureCrash(error: unknown, extra?: Record<string, unknown>) {
   if (!shouldEnableSentry || !initialized) {
     return;
   }
+
   Sentry.captureException(error, {
     extra,
   });

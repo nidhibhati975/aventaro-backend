@@ -59,6 +59,21 @@ const MAX_IDEMPOTENT_RETRIES = 2;
 const BASE_RETRY_DELAY_MS = 350;
 const REQUEST_TIMEOUT_MS = 30000;
 const LOCALHOST_PATTERN = /(localhost|127\.0\.0\.1|10\.0\.2\.2)/i;
+const REDACTED_LOG_VALUE = '[REDACTED]';
+const SENSITIVE_LOG_KEYS = new Set([
+  'authorization',
+  'accessToken',
+  'access_token',
+  'refreshToken',
+  'refresh_token',
+  'token',
+  'password',
+  'email',
+  'dsn',
+  'apiKey',
+  'api_key',
+  'secret',
+]);
 
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504]);
 
@@ -92,8 +107,50 @@ const API_URL = resolveApiUrl();
 
 function debugLog(message: string, details?: Record<string, unknown>) {
   if (__DEV__) {
-    console.log(message, details || {});
+    console.log(message, redactLogValue(details || {}) as Record<string, unknown>);
   }
+}
+
+function isSensitiveLogKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[-_]/g, '');
+  return (
+    SENSITIVE_LOG_KEYS.has(key) ||
+    normalized.includes('token') ||
+    normalized.includes('password') ||
+    normalized.includes('secret') ||
+    normalized.includes('authorization') ||
+    normalized.includes('apikey') ||
+    normalized.includes('dsn')
+  );
+}
+
+function redactLogValue(value: unknown, key?: string): unknown {
+  if (key && isSensitiveLogKey(key)) {
+    return REDACTED_LOG_VALUE;
+  }
+
+  if (typeof value === 'string') {
+    if (/^Bearer\s+/i.test(value) || /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)) {
+      return REDACTED_LOG_VALUE;
+    }
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) {
+      return REDACTED_LOG_VALUE;
+    }
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => redactLogValue(item));
+  }
+
+  if (isPlainObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entryValue]) => [
+      entryKey,
+      redactLogValue(entryValue, entryKey),
+    ]));
+  }
+
+  return value;
 }
 
 function toLoggableValue(value: unknown): unknown {

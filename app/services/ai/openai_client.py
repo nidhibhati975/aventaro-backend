@@ -115,6 +115,32 @@ async def generate_response(
     prompt = _truncate_text(prompt, settings.ai_prompt_max_chars)
     system_prompt = _truncate_text(system_prompt, min(settings.ai_prompt_max_chars, 2500))
     request_started_at = time.perf_counter()
+    if not settings.openai_api_key:
+        logger.warning(
+            "ai_provider_unconfigured",
+            extra={
+                "event_type": "ai_provider_unconfigured",
+                "request_id": (request_context or {}).get("request_id"),
+                "user_id": (request_context or {}).get("user_id"),
+                "endpoint": (request_context or {}).get("endpoint"),
+                "ai_operation": (request_context or {}).get("ai_operation"),
+            },
+        )
+        fallback = OpenAIResponse(
+            content=_safe_json_content(fallback_payload),
+            model=settings.model_name,
+            fallback_used=True,
+        )
+        _log_usage(
+            request_context=request_context,
+            duration_ms=(time.perf_counter() - request_started_at) * 1000,
+            model=fallback.model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            fallback_used=True,
+        )
+        return fallback
     timeout = httpx.Timeout(settings.ai_request_timeout_seconds, connect=1.0)
     text_format = response_format or {"type": "json_object"}
     payload = {

@@ -183,7 +183,7 @@ gradle.taskGraph.whenReady { taskGraph ->
         task.path in [":app:assembleRelease", ":app:bundleRelease", ":app:packageRelease"]
     }
     if (releaseArtifactTaskRequested && !hasValidReleaseSigning && !allowDebugSignedRelease) {
-        throw new GradleException(
+        throw new org.gradle.api.GradleException(
             "Release signing is required for Android release artifacts. " +
             "Set ANDROID_KEYSTORE_PATH, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, and ANDROID_KEY_PASSWORD " +
             "to real non-placeholder values. For local smoke builds only, pass -PANDROID_ALLOW_DEBUG_SIGNED_RELEASE=true."

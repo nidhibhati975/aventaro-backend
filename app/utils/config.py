@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 import re
 from dataclasses import dataclass
@@ -35,7 +37,6 @@ PLACEHOLDER_MARKERS = {
 DEV_REQUIRED_DEFAULTS = {
     "JWT_SECRET": "development-placeholder-jwt-secret-change-before-launch",
     "JWT_ALGORITHM": "HS256",
-    "OPENAI_API_KEY": "sk-development-placeholder-key-not-used",
 }
 
 
@@ -47,10 +48,11 @@ class Settings:
     database_prefer_fallback: bool
     jwt_secret: str
     jwt_algorithm: str
+    encryption_key: str
     redis_url: str
     aws_access_key_id: str | None
     aws_secret_access_key: str | None
-    openai_api_key: str
+    openai_api_key: str | None
     cors_allowed_origins: tuple[str, ...] = ()
     model_name: str = "gpt-4.1-mini"
     ai_cache_ttl_seconds: int = 3600
@@ -131,6 +133,7 @@ class Settings:
     booking_provider: str = "duffel"
     app_env: str = "development"
     run_embedded_workers: bool = True
+    require_external_service_config: bool = False
 
     @property
     def is_production(self) -> bool:
@@ -149,7 +152,10 @@ def _read_required_env(*names: str) -> str:
 
 
 def _placeholder_config_allowed() -> bool:
-    raw_value = os.getenv("ALLOW_PLACEHOLDER_CONFIG", "true")
+    raw_value = os.getenv("ALLOW_PLACEHOLDER_CONFIG")
+    if raw_value is None or not raw_value.strip():
+        app_env = os.getenv("APP_ENV", "development").strip().lower()
+        return app_env != "production"
     return raw_value.strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -259,6 +265,15 @@ def _validate_optional_prefix(name: str, value: str | None, prefixes: tuple[str,
         raise RuntimeError(f"{name} has an invalid format")
 
 
+def _validate_encryption_key(value: str) -> None:
+    try:
+        decoded = base64.urlsafe_b64decode(value.encode("utf-8"))
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError("ENCRYPTION_KEY must be a URL-safe base64 encoded 32-byte key") from exc
+    if len(decoded) != 32:
+        raise RuntimeError("ENCRYPTION_KEY must decode to exactly 32 bytes")
+
+
 def validate_settings(settings: Settings) -> None:
     primary_database_valid = _is_valid_postgresql_url(settings.database_url)
     fallback_database_valid = _is_valid_postgresql_url(settings.database_url_fallback)
@@ -278,7 +293,8 @@ def validate_settings(settings: Settings) -> None:
         raise RuntimeError("JWT_SECRET must be configured")
     if settings.is_production and len(settings.jwt_secret) < 32:
         raise RuntimeError("JWT_SECRET must be at least 32 characters when APP_ENV=production")
-    if not settings.openai_api_key.startswith("sk-") or len(settings.openai_api_key) < 20:
+    _validate_encryption_key(settings.encryption_key)
+    if settings.openai_api_key and (not settings.openai_api_key.startswith("sk-") or len(settings.openai_api_key) < 20):
         raise RuntimeError("OPENAI_API_KEY must be a valid OpenAI API key")
     if not settings.model_name.strip():
         raise RuntimeError("MODEL_NAME must be configured")
@@ -398,10 +414,12 @@ def validate_settings(settings: Settings) -> None:
     if settings.msg91_sender_id and not re.match(r"^[A-Za-z0-9]{3,10}$", settings.msg91_sender_id):
         raise RuntimeError("MSG91_SENDER_ID has an invalid format")
     if settings.sentry_dsn and not _is_valid_http_url(settings.sentry_dsn):
-        raise RuntimeError("SENTRY_DSN must be a valid HTTP(S) DSN")
+        raise RuntimeError("BACKEND_SENTRY_DSN must be a valid HTTP(S) DSN")
     if settings.otel_exporter_otlp_endpoint and not _is_valid_http_url(settings.otel_exporter_otlp_endpoint):
         raise RuntimeError("OTEL_EXPORTER_OTLP_ENDPOINT must be a valid HTTP(S) URL")
-    if settings.is_production:
+    if settings.is_production and not settings.sentry_dsn and not _placeholder_config_allowed():
+        raise RuntimeError("BACKEND_SENTRY_DSN must be configured when APP_ENV=production")
+    if settings.is_production and settings.require_external_service_config:
         required_production_settings = {
             "AWS_ACCESS_KEY_ID": settings.aws_access_key_id,
             "AWS_SECRET_ACCESS_KEY": settings.aws_secret_access_key,
@@ -424,8 +442,7 @@ def validate_settings(settings: Settings) -> None:
             "SENDGRID_FROM_EMAIL": settings.sendgrid_from_email,
             "MSG91_AUTH_KEY": settings.msg91_auth_key,
             "MSG91_TEMPLATE_ID": settings.msg91_template_id,
-            "SENTRY_DSN": settings.sentry_dsn,
-            "OTEL_EXPORTER_OTLP_ENDPOINT": settings.otel_exporter_otlp_endpoint,
+            "BACKEND_SENTRY_DSN": settings.sentry_dsn,
         }
         missing = [name for name, value in required_production_settings.items() if not value]
         if _placeholder_config_allowed():
@@ -468,10 +485,11 @@ def get_settings() -> Settings:
         database_prefer_fallback=_read_bool_env("DATABASE_PREFER_FALLBACK", default=False),
         jwt_secret=_read_required_env("JWT_SECRET"),
         jwt_algorithm=_read_required_env("JWT_ALGORITHM"),
+        encryption_key=_read_required_env("ENCRYPTION_KEY"),
         redis_url=_read_required_env("REDIS_URL"),
         aws_access_key_id=_read_optional_env("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=_read_optional_env("AWS_SECRET_ACCESS_KEY"),
-        openai_api_key=_read_required_env("OPENAI_API_KEY"),
+        openai_api_key=_read_optional_env("OPENAI_API_KEY"),
         cors_allowed_origins=cors_allowed_origins,
         model_name=_read_env_value("MODEL_NAME", "gpt-4.1-mini").strip() or "gpt-4.1-mini",
         ai_cache_ttl_seconds=_read_int_env("AI_CACHE_TTL_SECONDS", 3600),
@@ -543,13 +561,14 @@ def get_settings() -> Settings:
         media_orphan_grace_minutes=_read_int_env("MEDIA_ORPHAN_GRACE_MINUTES", 60),
         media_cleanup_batch_size=_read_int_env("MEDIA_CLEANUP_BATCH_SIZE", 100),
         cloudfront_distribution_id=_read_optional_env("CLOUDFRONT_DISTRIBUTION_ID"),
-        sentry_dsn=_read_optional_env("SENTRY_DSN"),
+        sentry_dsn=_read_optional_env("BACKEND_SENTRY_DSN", "SENTRY_DSN"),
         otel_service_name=_read_env_value("OTEL_SERVICE_NAME", "aventaro-api").strip(),
         otel_exporter_otlp_endpoint=_read_optional_env("OTEL_EXPORTER_OTLP_ENDPOINT"),
         trace_sample_rate=_read_float_env("TRACE_SAMPLE_RATE", 0.2),
         booking_provider=normalize_booking_provider(_read_env_value("BOOKING_PROVIDER", "duffel")),
         app_env=app_env,
         run_embedded_workers=_read_bool_env("RUN_EMBEDDED_WORKERS", default=app_env != "production"),
+        require_external_service_config=_read_bool_env("REQUIRE_EXTERNAL_SERVICE_CONFIG", default=False),
     )
     validate_settings(settings)
     return settings
